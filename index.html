@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Visualizer</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Didact+Gothic&family=EB+Garamond:ital,wght@0,400;1,300&display=swap');
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden;background:#000;cursor:none}
+canvas{position:fixed;top:0;left:0;width:100%;height:100%}
+#c0{z-index:0}#c1{z-index:1}#c2{z-index:2}
+
+#vig{position:fixed;inset:0;z-index:3;pointer-events:none;
+  background:radial-gradient(ellipse 78% 88% at 50% 50%,transparent 30%,rgba(0,0,3,0.78)100%)}
+#grain{position:fixed;inset:0;z-index:4;pointer-events:none;opacity:.025;mix-blend-mode:screen;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size:200px 200px}
+
+#ui{position:fixed;bottom:42px;left:50%;transform:translateX(-50%);
+  z-index:20;display:flex;gap:14px;transition:opacity .9s ease}
+#ui.hidden{opacity:0;pointer-events:none}
+.btn{padding:12px 34px;border:1px solid rgba(160,130,220,.2);
+  background:rgba(3,1,12,.78);color:rgba(190,165,240,.82);
+  font-family:'Didact Gothic',sans-serif;font-size:9px;letter-spacing:.3em;
+  text-transform:uppercase;cursor:pointer;backdrop-filter:blur(22px);
+  border-radius:2px;transition:all .3s}
+.btn:hover{background:rgba(160,130,220,.1);border-color:rgba(160,130,220,.5);
+  color:#cdb8f0;box-shadow:0 0 30px rgba(140,100,220,.1)}
+#fileInput{display:none}
+#track{position:fixed;bottom:14px;left:50%;transform:translateX(-50%);
+  color:rgba(170,140,230,.28);font-family:'EB Garamond',serif;font-style:italic;
+  font-size:11px;letter-spacing:.18em;z-index:20;display:none;
+  max-width:72vw;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#hint{position:fixed;top:30px;left:50%;transform:translateX(-50%);
+  color:rgba(170,140,230,.16);font-family:'Didact Gothic',sans-serif;
+  font-size:8px;letter-spacing:.4em;text-transform:uppercase;
+  z-index:20;transition:opacity 2s}
+#hint.gone{opacity:0}
+</style>
+</head>
+<body>
+<canvas id="c0"></canvas><!-- background -->
+<canvas id="c1"></canvas><!-- orb plasma (offscreen composited) -->
+<canvas id="c2"></canvas><!-- orb surface + glow overlay -->
+<div id="vig"></div>
+<div id="grain"></div>
+<div id="hint">Esc — contrôles</div>
+<div id="ui">
+  <button class="btn" id="micBtn">Micro</button>
+  <button class="btn" id="fileBtn">Charger audio</button>
+  <input type="file" id="fileInput" accept="audio/*">
+</div>
+<div id="track"></div>
+
+<script>
+// ══════════════════════════════════════════════════════════
+//  CANVAS SETUP
+// ══════════════════════════════════════════════════════════
+const C0=document.getElementById('c0'),X0=C0.getContext('2d');
+const C1=document.getElementById('c1'),X1=C1.getContext('2d');
+const C2=document.getElementById('c2'),X2=C2.getContext('2d');
+// Offscreen canvas for plasma interior (composited into sphere)
+const Cp=document.createElement('canvas'), Xp=Cp.getContext('2d');
+
+let W,H,CX,CY,R;
+function resize(){
+  W=C0.width=C1.width=C2.width=window.innerWidth;
+  H=C0.height=C1.height=C2.height=window.innerHeight;
+  Cp.width=W; Cp.height=H;
+  CX=W/2; CY=H/2;
+  R=Math.min(W,H)*0.21;
+  buildStars();
+}
+window.addEventListener('resize',resize);
+const lerp=(a,b,t)=>a+(b-a)*t;
+const clamp=(v,lo,hi)=>Math.max(lo,Math.min(hi,v));
+
+// ══════════════════════════════════════════════════════════
+//  AUDIO ENGINE
+// ══════════════════════════════════════════════════════════
+let actx,analyser,freq,wave,live=false;
+let bs=0,ms=0,ts=0,lastBs=0,beatImpact=0,beatFlash=0;
+// Frequency band history for smooth reactivity
+let bsHist=new Array(8).fill(0), msHist=new Array(8).fill(0);
+
+function initAudio(src){
+  analyser=actx.createAnalyser();
+  analyser.fftSize=2048;
+  analyser.smoothingTimeConstant=0.76;
+  freq=new Uint8Array(analyser.frequencyBinCount);
+  wave=new Uint8Array(analyser.fftSize);
+  src.connect(analyser); analyser.connect(actx.destination);
+  live=true;
+  document.getElementById('ui').classList.add('hidden');
+  document.getElementById('hint').classList.add('gone');
+}
+function fBand(lo,hi){
+  if(!freq||!freq.length)return 0;
+  const a=Math.floor(lo*freq.length),b=Math.max(Math.floor(hi*freq.length),a+1);
+  let s=0; for(let i=a;i<b;i++)s+=freq[i];
+  return s/((b-a)*255);
+}
+
+document.getElementById('micBtn').onclick=async()=>{
+  actx=new(window.AudioContext||window.webkitAudioContext)();
+  const s=await navigator.mediaDevices.getUserMedia({audio:true});
+  initAudio(actx.createMediaStreamSource(s));
+};
+document.getElementById('fileBtn').onclick=()=>document.getElementById('fileInput').click();
+document.getElementById('fileInput').onchange=e=>{
+  const f=e.target.files[0];if(!f)return;
+  actx=new(window.AudioContext||window.webkitAudioContext)();
+  const a=new Audio(URL.createObjectURL(f));a.loop=true;a.play();
+  initAudio(actx.createMediaElementSource(a));
+  const el=document.getElementById('track');
+  el.textContent=f.name.replace(/\.[^.]+$/,'');el.style.display='block';
+};
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape')document.getElementById('ui').classList.toggle('hidden');
+});
+
+// ══════════════════════════════════════════════════════════
+//  STAR FIELD
+// ══════════════════════════════════════════════════════════
+const stars=[];
+let starCache=null,T=0;
+
+function buildStars(){
+  stars.length=0;
+  for(let i=0;i<980;i++){
+    const mw=Math.random()<0.48;
+    let x,y;
+    if(mw){
+      const t=Math.random();
+      x=(W*.08+t*W*.84)+(Math.random()-.5)*W*.22;
+      y=(H*.72-t*H*.52)+(Math.random()-.5)*H*.26;
+    }else{x=Math.random()*W;y=Math.random()*H;}
+    const r=Math.pow(Math.random(),3.5)*2+0.12;
+    stars.push({x,y,r,
+      a:r>1?Math.random()*.55+.3:Math.random()*.28+.06,
+      phase:Math.random()*Math.PI*2,
+      spd:Math.random()*.022+.005,
+      warm:Math.random()<.14,
+      spike:r>1&&Math.random()<.6,
+      sa:Math.random()*Math.PI});
+  }
+  const sc=document.createElement('canvas');
+  sc.width=W;sc.height=H;
+  const sx=sc.getContext('2d');
+  stars.forEach(s=>{
+    if(s.r<.45){
+      sx.beginPath();sx.arc(s.x,s.y,s.r,0,Math.PI*2);
+      sx.fillStyle=`rgba(200,212,255,${s.a})`;sx.fill();return;
+    }
+    const c=s.warm?'255,228,155':'210,222,255';
+    const g=sx.createRadialGradient(s.x,s.y,0,s.x,s.y,s.r*5);
+    g.addColorStop(0,`rgba(${c},${s.a*.18})`);
+    g.addColorStop(1,'rgba(0,0,0,0)');
+    sx.fillStyle=g;sx.fillRect(s.x-s.r*5,s.y-s.r*5,s.r*10,s.r*10);
+    sx.beginPath();sx.arc(s.x,s.y,s.r,0,Math.PI*2);
+    sx.fillStyle=`rgba(${c},${s.a})`;sx.fill();
+  });
+  starCache=sc;
+}
+
+// ══════════════════════════════════════════════════════════
+//  BACKGROUND
+// ══════════════════════════════════════════════════════════
+function drawBackground(){
+  X0.clearRect(0,0,W,H);
+  X0.fillStyle='#010009';X0.fillRect(0,0,W,H);
+
+  // Volumetric nebula — extremely subtle
+  // fix: add drift to nebulae
+  const nebs=[
+    [.22,.28,.52,245,.032],[.78,.72,.46,260,.025],
+    [.5,.9,.4,238,.020],[.68,.18,.38,252,.018]
+  ];
+  nebs.forEach(([xr,yr,rr,h,a],i)=>{
+    const nx=xr*W+Math.sin(T*.00036+i)*W*.022;
+    const ny=yr*H+Math.cos(T*.00029+i*.8)*H*.018;
+    const nr=rr*Math.min(W,H);
+    const g=X0.createRadialGradient(nx,ny,0,nx,ny,nr);
+    g.addColorStop(0,`hsla(${h},45%,9%,${a})`);
+    g.addColorStop(.5,`hsla(${h},35%,6%,${a*.35})`);
+    g.addColorStop(1,'rgba(0,0,0,0)');
+    X0.fillStyle=g;X0.fillRect(0,0,W,H);
+  });
+
+  if(starCache)X0.drawImage(starCache,0,0);
+
+  // Animate bright stars
+  stars.forEach(s=>{
+    if(s.r<.7)return;
+    const tw=.5+.5*Math.sin(s.phase+T*s.spd);
+    const c=s.warm?'255,228,155':'212,222,255';
+    const al=s.a*(.65+tw*.35);
+    if(s.spike){
+      const sl=s.r*(9+tw*7);
+      for(let d=0;d<4;d++){
+        const ang=s.sa+d*Math.PI/2;
+        const gsp=X0.createLinearGradient(s.x,s.y,
+          s.x+Math.cos(ang)*sl,s.y+Math.sin(ang)*sl);
+        gsp.addColorStop(0,`rgba(${c},${al*.5})`);
+        gsp.addColorStop(1,'rgba(0,0,0,0)');
+        X0.beginPath();X0.moveTo(s.x,s.y);
+        X0.lineTo(s.x+Math.cos(ang)*sl,s.y+Math.sin(ang)*sl);
+        X0.strokeStyle=gsp;X0.lineWidth=.5;X0.stroke();
+      }
+    }
+    X0.beginPath();X0.arc(s.x,s.y,s.r*(.82+tw*.18),0,Math.PI*2);
+    X0.fillStyle=`rgba(${c},${al})`;X0.fill();
+  });
+}
+
+// ══════════════════════════════════════════════════════════
+//  PLASMA NODES — the "soul" of the orb
+//  These are light sources that float inside the sphere
+//  and react to different frequency bands
+// ══════════════════════════════════════════════════════════
+const NODES=8;
+const nodes=Array.from({length:NODES},(_,i)=>({
+  // Orbit parameters (polar coords relative to center)
+  orbitR: Math.random()*.45+.08,   // fraction of R
+  orbitSpeed: (Math.random()*.008+.003)*(Math.random()<.5?1:-1),
+  angle: Math.random()*Math.PI*2,
+  angleOffset: (i/NODES)*Math.PI*2,
+  // Visual
+  hueOffset: i*(360/NODES),
+  size: Math.random()*.28+.15,     // fraction of R
+  band: [i/NODES, Math.min((i+1.5)/NODES, 1)], // frequency band
+  pulse: Math.random(),
+  pulseSpd: Math.random()*.04+.02,
+}));
+
+// Color palette — slowly cycling
+const PALS=[
+  {base:255,accent:285}, // violet-purple
+  {base:230,accent:210}, // blue-indigo
+  {base:270,accent:250}, // purple-violet
+  {base:200,accent:230}, // teal-blue
+  {base:245,accent:268}, // indigo-violet
+];
+let palIdx=0,palFrac=0,baseH=255,accH=285;
+
+function tickPalette(){
+  palFrac+=0.003;
+  if(palFrac>=1){palFrac=0;palIdx=(palIdx+1)%PALS.length;}
+  const a=PALS[palIdx],b=PALS[(palIdx+1)%PALS.length];
+  const e=palFrac<.5?2*palFrac*palFrac:1-Math.pow(-2*palFrac+2,2)/2;
+  baseH=lerp(a.base,b.base,e);
+  accH=lerp(a.accent,b.accent,e);
+}
+
+// ══════════════════════════════════════════════════════════
+//  DRAW ORB
+// ══════════════════════════════════════════════════════════
+function drawOrb(){
+  X1.clearRect(0,0,W,H);
+  X2.clearRect(0,0,W,H);
+  Xp.clearRect(0,0,W,H);
+
+  // ── Audio ────────────────────────────────────────────
+  if(live&&analyser){
+    analyser.getByteFrequencyData(freq);
+    analyser.getByteTimeDomainData(wave);
+  }
+  const rawB=live?fBand(0,.05):.07+.035*Math.sin(T*.017);
+  const rawM=live?fBand(.05,.28):.045+.02*Math.sin(T*.023);
+  const rawT=live?fBand(.28,1):.025+.012*Math.sin(T*.031);
+
+  bs=lerp(bs,rawB,.24); ms=lerp(ms,rawM,.19); ts=lerp(ts,rawT,.15);
+  const delta=rawB-lastBs;
+  if(delta>.038){beatImpact=clamp(delta*4,.6,1);beatFlash=1;}
+  beatImpact=lerp(beatImpact,0,.08);
+  beatFlash*=.82;
+  lastBs=lerp(lastBs,rawB,.22);
+
+  tickPalette();
+
+  // Sphere radius pulses gently with bass only
+  const sphereR=R*(1+bs*.18+beatImpact*.06);
+
+  // ── PLASMA INTERIOR ──────────────────────────────────
+  // Rendered onto Cp (offscreen), then clipped into sphere on X1
+
+  // Background fill of plasma canvas — absolute black
+  Xp.fillStyle='#000';Xp.fillRect(0,0,W,H);
+
+  // Deep interior ambient color — very dark base jewel color
+  const baseGrad=Xp.createRadialGradient(CX,CY,0,CX,CY,sphereR);
+  baseGrad.addColorStop(0,  `hsla(${baseH},80%,6%,1)`);
+  baseGrad.addColorStop(.4, `hsla(${baseH},85%,9%,1)`);
+  baseGrad.addColorStop(.75,`hsla(${baseH+12},80%,14%,1)`);
+  baseGrad.addColorStop(1,  `hsla(${baseH+22},75%,20%,1)`);
+  Xp.fillStyle=baseGrad;Xp.fillRect(0,0,W,H);
+
+  // Move and draw plasma nodes
+  nodes.forEach((nd,i)=>{
+    nd.angle+=nd.orbitSpeed*(1+(live?fBand(nd.band[0],nd.band[1])*.8:0));
+    nd.pulse+=nd.pulseSpd;
+
+    const bandVal=live?fBand(nd.band[0],nd.band[1]):(.04+.025*Math.sin(nd.pulse));
+    const orbitDist=sphereR*(nd.orbitR+bandVal*.25);
+    const nx=CX+Math.cos(nd.angle+nd.angleOffset)*orbitDist;
+    const ny=CY+Math.sin(nd.angle+nd.angleOffset)*orbitDist;
+    const nodeR=sphereR*(nd.size+bandVal*.35+bs*.12);
+    const nodeAlpha=.12+bandVal*.55+bs*.12;
+    const h=(baseH+nd.hueOffset)%360;
+    const lum=45+bandVal*25+bs*15;
+
+    // Main node glow
+    const g=Xp.createRadialGradient(nx,ny,0,nx,ny,nodeR);
+    g.addColorStop(0,  `hsla(${h},100%,${lum+20}%,${nodeAlpha})`);
+    g.addColorStop(.3, `hsla(${h},95%,${lum}%,${nodeAlpha*.65})`);
+    g.addColorStop(.7, `hsla(${(h+25)%360},90%,${lum*.75}%,${nodeAlpha*.25})`);
+    g.addColorStop(1,  'rgba(0,0,0,0)');
+    Xp.fillStyle=g;
+    Xp.fillRect(nx-nodeR,ny-nodeR,nodeR*2,nodeR*2);
+  });
+
+  // Central core — always glowing, surges on bass
+  const coreR=sphereR*(.28+bs*.4+beatImpact*.22);
+  const core=Xp.createRadialGradient(CX,CY,0,CX,CY,coreR);
+  core.addColorStop(0,  `hsla(${baseH},100%,85%,${.08+bs*.45+beatImpact*.3})`);
+  core.addColorStop(.2, `hsla(${baseH},100%,70%,${.05+bs*.28})`);
+  core.addColorStop(.55,`hsla(${baseH+15},90%,55%,${.03+bs*.15})`);
+  core.addColorStop(1,  'rgba(0,0,0,0)');
+  Xp.fillStyle=core;Xp.fillRect(0,0,W,H);
+
+  // Beat impact flash inside
+  if(beatImpact>.02){
+    const bf=Xp.createRadialGradient(CX,CY,0,CX,CY,sphereR);
+    bf.addColorStop(0,`rgba(255,255,255,${beatImpact*.16})`);
+    bf.addColorStop(.4,`rgba(255,255,255,${beatImpact*.06})`);
+    bf.addColorStop(1,'rgba(0,0,0,0)');
+    Xp.fillStyle=bf;Xp.fillRect(0,0,W,H);
+  }
+
+  // ── COMPOSITE: clip plasma into sphere ───────────────
+  X1.save();
+  X1.beginPath();
+  X1.arc(CX,CY,sphereR,0,Math.PI*2);
+  X1.clip();
+  X1.drawImage(Cp,0,0); // plasma goes inside the circle
+  X1.restore();
+
+  // ── SURFACE LAYERS on X2 ─────────────────────────────
+
+  // 1. Outer atmospheric corona — large soft glow
+  const coronaR=sphereR*5;
+  const corona=X2.createRadialGradient(CX,CY,sphereR*.7,CX,CY,coronaR);
+  corona.addColorStop(0,  `hsla(${baseH},90%,55%,${.022+bs*.048})`);
+  corona.addColorStop(.2, `hsla(${accH},80%,48%,${.014+bs*.028})`);
+  corona.addColorStop(.5, `hsla(${baseH},70%,40%,${.006+bs*.012})`);
+  corona.addColorStop(1,  'rgba(0,0,0,0)');
+  X2.fillStyle=corona;X2.fillRect(0,0,W,H);
+
+  // 2. Tight bloom glow just outside sphere
+  const bloom=X2.createRadialGradient(CX,CY,sphereR*.88,CX,CY,sphereR*2.1);
+  bloom.addColorStop(0,  `hsla(${baseH},100%,62%,${.10+bs*.20})`);
+  bloom.addColorStop(.3, `hsla(${accH}, 90%,52%,${.05+bs*.10})`);
+  bloom.addColorStop(.7, `hsla(${baseH},80%,42%,${.02+bs*.04})`);
+  bloom.addColorStop(1,  'rgba(0,0,0,0)');
+  X2.fillStyle=bloom;X2.fillRect(0,0,W,H);
+
+  // 3. Beat god-rays
+  if(beatFlash>.02){
+    const RAYS=20;
+    X2.save();
+    for(let i=0;i<RAYS;i++){
+      const ang=(i/RAYS)*Math.PI*2+T*.0025;
+      const bandEnergy=live?fBand((i/RAYS)*0.8,(i/RAYS+.1)*.8):0;
+      const len=sphereR*(1.6+bandEnergy*3+Math.random()*.3);
+      const x1=CX+Math.cos(ang)*sphereR*.92,y1=CY+Math.sin(ang)*sphereR*.92;
+      const x2=CX+Math.cos(ang)*(sphereR*.92+len),y2=CY+Math.sin(ang)*(sphereR*.92+len);
+      const gr=X2.createLinearGradient(x1,y1,x2,y2);
+      gr.addColorStop(0,`hsla(${(baseH+i*8)%360},100%,85%,${beatFlash*.075})`);
+      gr.addColorStop(.4,`hsla(${baseH},90%,70%,${beatFlash*.03})`);
+      gr.addColorStop(1,'rgba(0,0,0,0)');
+      const pw=sphereR*.045;
+      const px=-Math.sin(ang)*pw,py=Math.cos(ang)*pw;
+      X2.beginPath();
+      X2.moveTo(x1+px,y1+py);X2.lineTo(x1-px,y1-py);X2.lineTo(x2,y2);
+      X2.closePath();X2.fillStyle=gr;X2.fill();
+    }
+    X2.restore();
+  }
+
+  // 4. Fresnel rim light — thin bright halo on edge
+  X2.save();
+  X2.beginPath();X2.arc(CX,CY,sphereR,0,Math.PI*2);
+  const fresnel=X2.createRadialGradient(CX,CY,sphereR*.74,CX,CY,sphereR*1.01);
+  fresnel.addColorStop(0,  'rgba(0,0,0,0)');
+  fresnel.addColorStop(.6, 'rgba(0,0,0,0)');
+  fresnel.addColorStop(.84,`hsla(${accH},100%,82%,.07)`);
+  fresnel.addColorStop(.93,`hsla(${accH+15},100%,90%,.22)`);
+  fresnel.addColorStop(1,  `hsla(${accH+25},100%,96%,.52)`);
+  X2.fillStyle=fresnel;X2.fill();
+  X2.restore();
+
+  // 5. Thin rim stroke
+  X2.save();
+  X2.beginPath();X2.arc(CX,CY,sphereR,0,Math.PI*2);
+  X2.strokeStyle=`hsla(${accH+20},100%,88%,${.25+ms*.12})`;
+  X2.lineWidth=1;X2.stroke();
+  X2.restore();
+
+  // 6. Large soft specular — upper-left
+  X2.save();
+  X2.beginPath();X2.arc(CX,CY,sphereR,0,Math.PI*2);X2.clip();
+  const sx=CX-sphereR*.32,sy=CY-sphereR*.38;
+  const spec=X2.createRadialGradient(sx,sy,0,sx,sy,sphereR*.62);
+  spec.addColorStop(0,  'rgba(255,255,255,.36)');
+  spec.addColorStop(.22,'rgba(255,255,255,.12)');
+  spec.addColorStop(.55,'rgba(255,255,255,.025)');
+  spec.addColorStop(1,  'rgba(0,0,0,0)');
+  X2.fillStyle=spec;X2.fillRect(sx-sphereR,sy-sphereR,sphereR*2,sphereR*2);
+
+  // 7. Sharp micro specular dot
+  const dx=sx+sphereR*.05,dy=sy+sphereR*.03;
+  const dot=X2.createRadialGradient(dx,dy,0,dx,dy,sphereR*.018);
+  dot.addColorStop(0,'rgba(255,255,255,.95)');
+  dot.addColorStop(1,'rgba(255,255,255,0)');
+  X2.fillStyle=dot;
+  X2.beginPath();X2.arc(dx,dy,sphereR*.018,0,Math.PI*2);X2.fill();
+  X2.restore();
+
+  // 8. Screen-space beat flash
+  if(beatFlash>.03){
+    const vf=X2.createRadialGradient(CX,CY,sphereR*.4,CX,CY,Math.hypot(W,H)*.58);
+    vf.addColorStop(0,'rgba(0,0,0,0)');
+    vf.addColorStop(.6,`hsla(${baseH},100%,56%,${beatFlash*.055})`);
+    vf.addColorStop(1,`hsla(${baseH},100%,50%,${beatFlash*.028})`);
+    X2.fillStyle=vf;X2.fillRect(0,0,W,H);
+  }
+
+  // 9. Idle label
+  if(!live){
+    X2.save();
+    X2.font=`300 11px 'EB Garamond'`;
+    X2.fillStyle='rgba(170,140,230,.15)';
+    X2.textAlign='center';
+    X2.fillText('choisir une source audio',CX,CY+sphereR+54);
+    X2.restore();
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+//  MAIN LOOP
+// ══════════════════════════════════════════════════════════
+function loop(){
+  T++;
+  drawBackground();
+  drawOrb();
+  requestAnimationFrame(loop);
+}
+resize();
+loop();
+</script>
+</body>
+</html>
