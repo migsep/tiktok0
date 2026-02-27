@@ -428,10 +428,7 @@ void main(){
   float sR=uSphereR, sR2=sR*sR, d2=dot(p,p);
 
   vec4 mw=texture2D(uGalaxy,vUv);
-  vec2 twinkleCell=floor(vUv*300.0);
-  float twinklePhase=ghash(twinkleCell*0.017)*6.2832;
-  float twinkle=0.55+0.45*sin(uTime*(1.6+ghash(twinkleCell*0.031)*2.8)+twinklePhase);
-  vec3 col=mw.rgb*mw.a*0.40 + texture2D(uStars,vUv).rgb*0.40*twinkle;
+  vec3 col=mw.rgb*mw.a*0.40 + texture2D(uStars,vUv).rgb*0.40;
   col+=hsl2rgb(uHue,0.55,0.85)*exp(-length(p-vec2(0.22,-0.22)*sR)*11.0)*0.07;
 
   if(d2<sR2){
