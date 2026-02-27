@@ -686,7 +686,7 @@ function loop(now){
   bs   = lerp(bs,   rawB,  1-Math.exp(-dt*12));
   sub  = lerp(sub,  rawSub,1-Math.exp(-dt*14));
   const delta = rawB - lastBs;
-  if(delta > 0.028) beatImpact = clamp(delta*5.8, 0.4, 1.0);
+  if(delta > 0.010) beatImpact = clamp(delta*7.5, 0.12, 1.0);
   beatImpact = lerp(beatImpact, 0, 1-Math.exp(-dt*5));
   lastBs = lerp(lastBs, rawB, 1-Math.exp(-dt*10));
 
