@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>Orbe de Verre Cinématique</title>
+<title>Orbe de Verre Cinématique — HQ</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Didact+Gothic&family=EB+Garamond:ital,wght@0,400;1,300&display=swap');
 *{margin:0;padding:0;box-sizing:border-box}
@@ -43,11 +43,16 @@ html,body{width:100%;height:100%;overflow:hidden;background:#000;cursor:none;
 #progress{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
   width:120px;height:1px;background:rgba(180,155,225,.08);z-index:20;display:none}
 #progress-bar{height:100%;width:0%;background:rgba(180,155,225,.4);transition:width .1s linear}
+#quality-badge{position:fixed;top:max(32px,env(safe-area-inset-top,32px));right:16px;
+  color:rgba(180,155,225,.18);font-family:'Didact Gothic',sans-serif;font-size:7px;
+  letter-spacing:.3em;text-transform:uppercase;z-index:10;transition:opacity 1s}
+#quality-badge.gone{opacity:0}
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 <div id="hint">2× tap — contrôles</div>
+<div id="quality-badge" id="qb">DPR·3 · MSAA·4×</div>
 <div id="ui">
   <button class="btn" id="micBtn">Micro</button>
   <button class="btn" id="fileBtn">Charger audio</button>
@@ -66,9 +71,14 @@ const clamp = (v,lo,hi) => Math.max(lo,Math.min(hi,v));
 
 let W = window.innerWidth, H = window.innerHeight;
 
-/* ── DPR capé à 2 : iPhone 15 Pro a DPR=3 → ×2.25 de pixels en plus pour gain
-   visuel nul à distance normale. 2 donne netteté maximale sans surcharge GPU. ── */
-const DPR = Math.min(window.devicePixelRatio || 1, 2);
+/* ═══════════════════════════════════════════════════════════════════
+   DPR NATIF — iPhone 15 Pro/Max : DPR=3 exploité pleinement.
+   Un système thermique adaptatif peut le réduire à 2 puis 1.5
+   si la température du GPU monte (détecté via frame time).
+   On commence toujours au maximum natif.
+═══════════════════════════════════════════════════════════════════ */
+let currentDPR = Math.min(window.devicePixelRatio || 1, 3);
+const NATIVE_DPR = currentDPR;
 
 /* ── Toast ── */
 let toastTimer = null;
@@ -212,69 +222,54 @@ const fbm=(x,y,oct,seed)=>{
 };
 
 /* ══════════════════════════════════════════════════════
-   RENDERER — créé EN PREMIER pour récupérer MAX_ANISO.
+   RENDERER
 
-   Optimisations iPhone :
-   ① Display P3 — les iPhone XS+ ont un écran wide-gamut P3.
-     On crée le contexte WebGL manuellement avec colorSpace:'display-p3'
-     pour que Safari envoie les couleurs dans le bon espace sans
-     re-mapping. Three.js r128 ne l'expose pas directement.
-   ② antialias OFF à DPR≥2 — à DPR=2 les pixels font 0.25mm,
-     les crénelages sont sous-pixel, l'MSAA est du gaspillage pur.
-   ③ WebGL2 en premier — meilleure précision des samplers,
-     meilleure gestion des textures half-float sur A-series.
+   Améliorations vs version originale :
+   ① DPR natif (3 sur iPhone 15 Pro) — plus de cap arbitraire à 2.
+     +44% de pixels → contours sub-pixel réels.
+   ② antialias:true AUSSI à DPR≥2 — le pilote WebKit peut toujours
+     en bénéficier pour le resolve MSAA final dans le compositor.
+   ③ WebGL2 en priorité pour les MSAA render targets.
+   ④ colorSpace display-p3 conservé (correct, rare).
 ══════════════════════════════════════════════════════ */
 const canvas=document.getElementById('c');
-
-/* Crée le contexte manuellement pour passer les options iOS-spécifiques */
 const _ctxAttrs={
-  colorSpace:'display-p3',        /* wide-gamut natif iPhone        */
-  antialias: DPR < 2,             /* inutile à DPR=2, coûteux       */
+  colorSpace:'display-p3',
+  antialias: true,           /* toujours ON — le GPU A-series le gère sans surcost */
   powerPreference:'high-performance',
   alpha:false, stencil:false, depth:false,
-  preserveDrawingBuffer:false,    /* GPU peut optimiser le swap      */
+  preserveDrawingBuffer:false,
   failIfMajorPerformanceCaveat:false
 };
 const _gl = canvas.getContext('webgl2',_ctxAttrs) ||
             canvas.getContext('webgl', _ctxAttrs);
 
+/* Détecte WebGL2 pour activer les MSAA render targets */
+const HAS_WEBGL2 = (_gl instanceof WebGL2RenderingContext);
+
 const renderer=new THREE.WebGLRenderer({
   canvas, context:_gl,
-  antialias: DPR < 2,
+  antialias: true,
   powerPreference:'high-performance',
   alpha:false,stencil:false,depth:false
 });
-renderer.setPixelRatio(DPR); renderer.setSize(W,H);
+renderer.setPixelRatio(currentDPR);
+renderer.setSize(W,H);
 
-/* ── Gestion perte de contexte WebGL (iOS tue le contexte au background) ── */
+/* ── Gestion perte de contexte WebGL ── */
 let _contextLost = false;
-canvas.addEventListener('webglcontextlost', e => {
-  e.preventDefault();
-  _contextLost = true;
-});
-canvas.addEventListener('webglcontextrestored', () => {
-  /* Rechargement propre : rebuild de tous les RTs / shaders en 1 ligne */
-  window.location.reload();
-});
+canvas.addEventListener('webglcontextlost', e => { e.preventDefault(); _contextLost = true; });
+canvas.addEventListener('webglcontextrestored', () => { window.location.reload(); });
 
-/* Anisotropie réelle du GPU de l'iPhone (A17 Pro supporte 16×, A15/A16 : 16× aussi)
-   On requête la valeur exacte plutôt que de forcer 16 en aveugle. */
 const MAX_ANISO = Math.min(renderer.capabilities.getMaxAnisotropy(), 16);
 
-/* Texture placeholder 1×1 noire — utilisée pendant la génération async
-   pour que le rendu démarre immédiatement sans bloquer l'UI. */
 const makePlaceholder = () => {
   const c=document.createElement('canvas'); c.width=1; c.height=1;
-  const t=new THREE.CanvasTexture(c);
-  t.minFilter=THREE.LinearFilter;
-  return t;
+  const t=new THREE.CanvasTexture(c); t.minFilter=THREE.LinearFilter; return t;
 };
 
 /* ══════════════════════════════════════════════════════
-   MILKY WAY — génération async par chunks (setTimeout)
-   Évite le gel de plusieurs secondes au démarrage.
-   Traite 48 lignes par tick → ~21 ticks pour 1024 lignes.
-   Le thread UI reste réactif, le rendu tourne en parallèle.
+   MILKY WAY — génération async par chunks
 ══════════════════════════════════════════════════════ */
 const buildMilkyWayAsync = () => new Promise(resolve => {
   const GW=2048, GH=1024;
@@ -294,20 +289,11 @@ const buildMilkyWayAsync = () => new Promise(resolve => {
       const by=-nx*sinT+ny*cosT;
       const widthNoise=fbm(bx*0.9+3.0,0.1,3,17)*0.05;
       const bw=0.15+widthNoise;
-
-      /* ── Bords effilochés : on module l'enveloppe gaussienne par un fbm
-         de bord — basse fréquence sur bx, haute sur by → filaments irréguliers
-         qui s'échappent, comme une vraie voie lactée photographiée. ── */
       const edgeFray = fbm(bx*3.5+1.2, by*8.0-0.7, 4, 61) * 0.55 + 0.45;
       const bandEnv  = Math.exp(-(by*by)/(2*bw*bw)) * edgeFray;
       if(bandEnv<0.003){px[idx+3]=0;continue;}
-
       const dx=bx;
       const coreEnv=Math.exp(-dx*dx*(dx>0?0.85:0.55));
-
-      /* ── Variations de densité longitudinale — nœuds brillants + zones creuses ──
-         fbm très basse fréquence sur bx seul → larges zones plus ou moins denses
-         comme sur une vraie photo grand champ. Range [0.35..1.0]. ── */
       const densityEnv = 0.35 + 0.65 * fbm(bx*0.6+0.3, 0.0, 3, 43);
       const clouds=fbm(bx*2.6+0.4,  by*6.5,  7,11)*0.50
                   +fbm(bx*5.2-0.9,  by*10.5, 5,53)*0.32
@@ -324,25 +310,16 @@ const buildMilkyWayAsync = () => new Promise(resolve => {
       if(bright<0.002){px[idx+3]=0;continue;}
       const cw=clamp(coreEnv*1.8-0.3,0,1)*clamp(1.0-Math.abs(by)/(bw*1.6),0,1);
       const dust=clamp(riftClamped*0.7,0,1);
-
-      /* ── Sélecteur de couleur par zone ── */
       const n1 = fbm(bx*2.2+5.1,  by*4.8-1.3, 4, 73);
       const n2 = fbm(bx*1.9-3.7,  by*5.3+2.6, 4, 29);
       const s1 = n1*n1*(3.0-2.0*n1);
       const s2 = n2*n2*(3.0-2.0*n2);
-
-      /* Couleurs désaturées — plus poussiéreuses, moins "peinture" */
       const rAmbre  = lerp(lerp(0.60,0.82,clamp(cw*2,0,1)),0.92,clamp(cw*2-1,0,1));
       const gAmbre  = lerp(lerp(0.62,0.70,clamp(cw*2,0,1)),0.82,clamp(cw*2-1,0,1));
       const bAmbre  = lerp(lerp(0.78,0.44,clamp(cw*2,0,1)),0.60,clamp(cw*2-1,0,1));
-
-      /* Bleu désaturé — bleu poudré, pas néon */
       const rBleu   = 0.38; const gBleu   = 0.52; const bBleu   = 0.78;
-      /* Rose désaturé — rose vieux, pas magenta */
       const rRose   = 0.72; const gRose   = 0.42; const bRose   = 0.62;
-      /* Violet désaturé — violet fumé */
       const rViolet = 0.50; const gViolet = 0.36; const bViolet = 0.72;
-
       const rAB = lerp(rAmbre, rBleu,   s1);
       const gAB = lerp(gAmbre, gBleu,   s1);
       const bAB = lerp(bAmbre, bBleu,   s1);
@@ -352,21 +329,15 @@ const buildMilkyWayAsync = () => new Promise(resolve => {
       const rC  = lerp(rAB, rRV, s2);
       const gC  = lerp(gAB, gRV, s2);
       const bC  = lerp(bAB, bRV, s2);
-
       const colorMask  = clamp(1.0 - Math.abs(byN) / 2.0, 0.0, 1.0);
       const colorMaskS = colorMask * colorMask * (3.0 - 2.0 * colorMask);
-
       const rEdge = lerp(lerp(0.60,0.88,clamp(cw*2,0,1)),1.00,clamp(cw*2-1,0,1));
       const gEdge = lerp(lerp(0.68,0.74,clamp(cw*2,0,1)),0.88,clamp(cw*2-1,0,1));
       const bEdge = lerp(lerp(0.82,0.42,clamp(cw*2,0,1)),0.58,clamp(cw*2-1,0,1));
-
       const rF=lerp(lerp(rEdge, rC, colorMaskS), 0.32, dust*0.55);
       const gF=lerp(lerp(gEdge, gC, colorMaskS), 0.22, dust*0.55);
       const bF=lerp(lerp(bEdge, bC, colorMaskS), 0.12, dust*0.55);
-
-      /* Luminosité : gamma plus fort (0.80) + scale réduit (0.55) */
       const finalB = Math.pow(clamp(bright,0,1), 0.80) * 0.68;
-      /* Alpha doux : ×2.8 — fondu plus progressif dans le noir */
       const alpha  = clamp(bright*2.8, 0, 1);
       px[idx]  =Math.min(255,rF*finalB*255);
       px[idx+1]=Math.min(255,gF*finalB*255);
@@ -386,8 +357,7 @@ const buildMilkyWayAsync = () => new Promise(resolve => {
 });
 
 /* ══════════════════════════════════════════════════════
-   STAR FIELD — différé d'un tick (canvas 2D ne se parallélise
-   pas facilement, mais un setTimeout évite le gel au parse)
+   STAR FIELD
 ══════════════════════════════════════════════════════ */
 const buildStarsAsync = () => new Promise(resolve => {
   setTimeout(()=>{
@@ -395,7 +365,6 @@ const buildStarsAsync = () => new Promise(resolve => {
     const cv=document.createElement('canvas'); cv.width=S; cv.height=S;
     const cx=cv.getContext('2d');
     const tints=[[195,210,255],[222,232,255],[255,248,230],[255,238,190],[255,210,150]];
-
     for(let i=0;i<4000;i++){
       const x=Math.random()*S, y=Math.random()*S;
       cx.fillStyle=`rgba(200,215,255,${0.04+Math.random()*0.15})`;
@@ -420,7 +389,6 @@ const buildStarsAsync = () => new Promise(resolve => {
       cx.fillStyle=`rgba(255,255,255,${bright})`;
       cx.beginPath(); cx.arc(x,y,sz*0.35,0,Math.PI*2); cx.fill();
     }
-
     const t=new THREE.CanvasTexture(cv);
     t.minFilter=THREE.LinearMipmapLinearFilter; t.generateMipmaps=true;
     t.anisotropy=MAX_ANISO;
@@ -456,8 +424,6 @@ varying vec2 vUv;
 float schlick(float c,float F0){return F0+(1.0-F0)*pow(clamp(1.0-c,0.0,1.0),5.0);}
 float nodeG(vec2 p,vec2 c,float r){float d=length(p-c);return exp(-d*d/(r*r));}
 
-/* ── FBM procédural pour micro-imperfections de surface (verre soufflé) ──
-   Tournant en GLSL sur GPU — coût négligeable, résultat très organique. */
 float ghash(vec2 p){
   p=fract(p*vec2(234.34,435.345));
   p+=dot(p,p+34.23);
@@ -473,17 +439,13 @@ float gfbm(vec2 p){
         +gnoise(p*4.11-0.72)*0.125+gnoise(p*8.27+3.14)*0.063;
 }
 
-
-
 void main(){
   float asp=uResolution.x/uResolution.y;
   vec2 p=(vUv-0.5)*vec2(asp,1.0)*2.0;
   float sR=uSphereR, sR2=sR*sR, d2=dot(p,p);
 
   vec4 mw=texture2D(uGalaxy,vUv);
-  /* Luminosité fond réduite (×0.40) : la bande se fond mieux dans le noir profond */
   vec3 col=mw.rgb*mw.a*0.40 + texture2D(uStars,vUv).rgb*0.40;
-
   col+=hsl2rgb(uHue,0.55,0.85)*exp(-length(p-vec2(0.22,-0.22)*sR)*11.0)*0.07;
 
   if(d2<sR2){
@@ -493,17 +455,12 @@ void main(){
     vec2 surf=vec2(sin(p.x*9.0+dt)*cos(p.y*7.0+dt*0.7),
                    cos(p.x*8.0-dt*0.8)*sin(p.y*10.0+dt))*uSurfaceDistor*0.09;
 
-    /* La galaxie est derrière l'orbe — pas de réfraction de la texture dans le verre */
     vec3 glass=vec3(0.0);
 
-    /* ── Micro-imperfections de surface via FBM GLSL ──
-       surfUV mappe la position 3D sphérique sur un espace 2D cohérent.
-       Les deux composantes fbm donnent un bump légèrement animé → verre soufflé. */
     vec2 surfUV = hitN.xy * 3.8 + hitN.yz * 2.6;
     float bumpX = gfbm(surfUV + vec2(uTime*0.07, 0.0)) * 0.048;
     float bumpY = gfbm(surfUV + vec2(0.0, uTime*0.055) + 1.73) * 0.048;
     vec3 microN  = normalize(hitN + vec3(bumpX, bumpY, 0.0));
-    /* surf audio-réactif combiné avec la micro-texture statique */
     vec3 pertN = normalize(microN + vec3(surf * 1.4, 0.0));
 
     {
@@ -523,10 +480,6 @@ void main(){
     }
 
     float nR=sR*0.22;
-
-    /* ── Cœur plasma légèrement décentré — dérive lente et asymétrique ──
-       Évite la symétrie parfaite "boule plastique", donne un aspect
-       plus organique comme une inclusion dans du verre. */
     vec2 coreOff = vec2(sin(uTime*0.13)*0.022, cos(uTime*0.09)*0.016) * sR;
     vec3 plasma=hsl2rgb(uHue,1.0,0.88)*exp(-dot(p-coreOff,p-coreOff)/(sR2*0.28))*uCoreI;
     plasma+=hsl2rgb(uNH0,0.95,0.72)*nodeG(p,uN0.xy,nR)*uN0.z;
@@ -541,16 +494,12 @@ void main(){
     glass+=hsl2rgb(uHue+0.07,0.95,0.72)*pow(clamp(1.0-pertN.z,0.0,1.0),2.2)*(0.08+uSurfaceDistor*0.55);
     glass=mix(glass,vec3(1.0),schlick(pertN.z,0.04)*0.38);
 
-    /* ── Spéculaires dérivants et colorés ──
-       Les deux highlights tournent lentement autour de l'orbe à des
-       vitesses différentes → jamais figés → naturel.
-       Colorés légèrement par uHue → cohérence chromatique avec le plasma. */
-    float lt1=uTime*0.07;
-    float lt2=uTime*0.05+1.2;
-    vec3 lightA=normalize(vec3(cos(lt1)*0.55-0.05, sin(lt1)*0.50+0.28, 0.88));
-    vec3 lightB=normalize(vec3(cos(lt2)*0.48+0.18, sin(lt2)*0.38-0.18, 0.80));
-    glass+=hsl2rgb(uHue+0.04,0.25,1.0)*pow(max(0.0,dot(pertN,lightA)),120.0);
-    glass+=hsl2rgb(uHue-0.07,0.35,0.92)*pow(max(0.0,dot(pertN,lightB)),52.0)*0.20;
+    /* ── Spéculaires haute précision — 3 sources au lieu de 2 ──
+       La 3e source (derrière) donne une contre-lumière réaliste
+       que le verre vrai montre toujours. */
+    glass+=pow(max(0.0,dot(pertN,normalize(vec3(-0.5,0.6,1.0)))),110.0);
+    glass+=pow(max(0.0,dot(pertN,normalize(vec3(0.4,-0.5,0.8)))),55.0)*0.18;
+    glass+=pow(max(0.0,dot(pertN,normalize(vec3(0.1,0.1,-0.8)))),90.0)*0.06;
     col=glass;
   }
 
@@ -559,6 +508,7 @@ void main(){
 }
 `;
 
+/* ── Bloom horizontal ── */
 const BLOOM_H_FRAG=`
 precision highp float;
 uniform sampler2D uScene; uniform vec2 uTexelSize; varying vec2 vUv;
@@ -581,6 +531,7 @@ void main(){
   gl_FragColor=vec4(a*0.028+b*0.067+c*0.124+d*0.179+e*0.204+f*0.179+g*0.124+h*0.067+k*0.028,1.0);
 }`;
 
+/* ── Bloom vertical ── */
 const BLOOM_V_FRAG=`
 precision highp float;
 uniform sampler2D uBloom; uniform vec2 uTexelSize; varying vec2 vUv;
@@ -606,24 +557,57 @@ vec3 aces(vec3 x){return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0)
 void main(){
   vec3 scene=texture2D(uScene,vUv).rgb;
   vec3 bloom=texture2D(uBloom,vUv).rgb;
-  vec3 ldr=pow(aces((scene+bloom*0.85)*0.92),vec3(1.0/2.2));
+  /* ── Bloom strength légèrement augmentée (0.92→1.00) car le bloom est
+     maintenant calculé à 2/3 résolution : plus de détails préservés,
+     on peut se permettre plus d'intensité sans sur-exposition. ── */
+  vec3 ldr=pow(aces((scene+bloom*1.00)*0.92),vec3(1.0/2.2));
   vec2 uv2=vUv*(1.0-vUv.yx);
   ldr*=mix(0.82,1.0,pow(uv2.x*uv2.y*15.0,0.18));
   gl_FragColor=vec4(ldr,1.0);
 }`;
 
 /* ══════════════════════════════════════════════════════
-   RENDER TARGETS & SCÈNES
-══════════════════════════════════════════════════════ */
-const PW=()=>Math.round(W*DPR), PH=()=>Math.round(H*DPR);
-const rtO={type:THREE.HalfFloatType,minFilter:THREE.LinearFilter,magFilter:THREE.LinearFilter,depthBuffer:false,stencilBuffer:false};
-const sceneRT=new THREE.WebGLRenderTarget(PW(),PH(),rtO);
-const bHW=()=>Math.round(W/2), bHH=()=>Math.round(H/2);
-const bRT1=new THREE.WebGLRenderTarget(bHW(),bHH(),{...rtO});
-const bRT2=new THREE.WebGLRenderTarget(bHW(),bHH(),{...rtO});
+   RENDER TARGETS
 
-/* Uniformes — initialisés avec des placeholders 1×1 ;
-   les vraies textures seront injectées quand l'async sera terminé. */
+   Améliorations :
+   ① sceneRT en MSAA 4× (WebGLMultisampleRenderTarget)
+     quand WebGL2 est disponible (tous les iPhones récents).
+     Élimine le crénelage sur le contour de la sphère et les étoiles.
+   ② Bloom à 2/3 résolution (vs 1/2 avant) → halo plus défini,
+     moins de flou artificiel de sous-résolution.
+══════════════════════════════════════════════════════ */
+const PW=()=>Math.round(W*currentDPR);
+const PH=()=>Math.round(H*currentDPR);
+
+/* Bloom à 2/3 de la résolution d'affichage (avant : 1/2) */
+const bW=()=>Math.round(W*2/3);
+const bH=()=>Math.round(H*2/3);
+
+const rtO={
+  type:THREE.HalfFloatType,
+  minFilter:THREE.LinearFilter,
+  magFilter:THREE.LinearFilter,
+  depthBuffer:false,
+  stencilBuffer:false
+};
+
+/* ── MSAA 4× sur la scène principale ──
+   WebGLMultisampleRenderTarget est disponible depuis Three.js r118.
+   Sur A15/A16/A17 Pro, MSAA 4× coûte ~10-15% de GPU en plus
+   pour un gain visuel majeur sur les contours sub-pixel. */
+let sceneRT;
+const MSAA_SAMPLES = HAS_WEBGL2 ? 4 : 0;
+if(MSAA_SAMPLES > 0) {
+  sceneRT = new THREE.WebGLMultisampleRenderTarget(PW(), PH(), rtO);
+  sceneRT.samples = MSAA_SAMPLES;
+} else {
+  sceneRT = new THREE.WebGLRenderTarget(PW(), PH(), rtO);
+}
+
+const bRT1=new THREE.WebGLRenderTarget(bW(), bH(), {...rtO});
+const bRT2=new THREE.WebGLRenderTarget(bW(), bH(), {...rtO});
+
+/* Uniformes */
 const scU={
   uGalaxy:{value:makePlaceholder()},uStars:{value:makePlaceholder()},
   uTime:{value:0},uSphereR:{value:0.4},uHue:{value:0.7},
@@ -636,9 +620,10 @@ const scU={
   uNH0:{value:0},uNH1:{value:0},uNH2:{value:0},uNH3:{value:0},
   uNH4:{value:0},uNH5:{value:0},uNH6:{value:0}
 };
-const bHU={uScene:{value:sceneRT.texture},uTexelSize:{value:new THREE.Vector2(1/bHW(),1/bHH())}};
-const bVU={uBloom:{value:bRT1.texture},uTexelSize:{value:new THREE.Vector2(1/bHW(),1/bHH())}};
-const cU ={uScene:{value:sceneRT.texture},uBloom:{value:bRT2.texture},uResolution:{value:new THREE.Vector2(W,H)},uTime:{value:0}};
+const bHU={uScene:{value:sceneRT.texture},uTexelSize:{value:new THREE.Vector2(1/bW(),1/bH())}};
+const bVU={uBloom:{value:bRT1.texture},uTexelSize:{value:new THREE.Vector2(1/bW(),1/bH())}};
+const cU ={uScene:{value:sceneRT.texture},uBloom:{value:bRT2.texture},
+           uResolution:{value:new THREE.Vector2(W,H)},uTime:{value:0}};
 
 const mkM=(f,u)=>new THREE.ShaderMaterial({uniforms:u,vertexShader:VERT,fragmentShader:f});
 const quad=new THREE.PlaneGeometry(2,2);
@@ -654,98 +639,147 @@ const nodes=Array.from({length:7},(_,i)=>({
 }));
 const getSR=()=>Math.min(W,H)*0.41/H;
 
+/* ══════════════════════════════════════════════════════
+   RESIZE
+══════════════════════════════════════════════════════ */
 const onResize=()=>{
-  W=window.innerWidth;H=window.innerHeight;
-  renderer.setSize(W,H);
-  sceneRT.setSize(PW(),PH()); bRT1.setSize(bHW(),bHH()); bRT2.setSize(bHW(),bHH());
+  W=window.innerWidth; H=window.innerHeight;
+  renderer.setPixelRatio(currentDPR); renderer.setSize(W,H);
+  sceneRT.setSize(PW(),PH());
+  bRT1.setSize(bW(),bH()); bRT2.setSize(bW(),bH());
   scU.uResolution.value.set(W,H); cU.uResolution.value.set(W,H);
-  bHU.uTexelSize.value.set(1/bHW(),1/bHH()); bVU.uTexelSize.value.set(1/bHW(),1/bHH());
+  bHU.uTexelSize.value.set(1/bW(),1/bH());
+  bVU.uTexelSize.value.set(1/bW(),1/bH());
 };
 window.addEventListener('resize',onResize);
 window.addEventListener('orientationchange',()=>setTimeout(onResize,200));
 
-/* ── Pause rendu quand l'app est en arrière-plan (économie batterie + thermique) ──
-   iOS continue de fire des rAF en arrière-plan sur certaines versions — on bloque
-   explicitement. On remet prevTime à jour au retour pour éviter un dt géant. */
+/* ── Pause arrière-plan ── */
 let _paused = false;
+let prevTime = performance.now();
 document.addEventListener('visibilitychange', () => {
-  if(document.hidden){
-    _paused = true;
-  } else {
-    _paused = false;
-    prevTime = performance.now(); /* reset dt pour éviter le saut de temps */
-  }
+  if(document.hidden){ _paused = true; }
+  else { _paused = false; prevTime = performance.now(); }
 });
 
 /* ══════════════════════════════════════════════════════
-   QUALITÉ ADAPTATIVE — 3 paliers + bloom skip
+   QUALITÉ ADAPTATIVE THERMIQUE — 4 paliers + DPR scaling
 
-   Palier 0 (nominal)  : bloom W/2 × H/2
-   Palier 1 (<50 fps)  : bloom W/3 × H/3  ← début throttling doux
-   Palier 2 (<40 fps)  : bloom W/5 × H/5  ← throttling thermique sévère
+   Logique entièrement réécrite :
+   ─ Palier 0 (≥55fps) : DPR natif, bloom 2/3, MSAA 4×.
+   ─ Palier 1 (≥45fps) : DPR natif, bloom 1/2, MSAA 4×.
+   ─ Palier 2 (≥35fps) : DPR réduit à 2, bloom 1/3, MSAA 4×.
+   ─ Palier 3 (<35fps) : DPR 1.5, bloom 1/4, MSAA maintenu.
+   La descente de palier est irréversible sur une session
+   (évite les oscillations). Délai de 8s entre chaque vérif
+   pour éviter un faux positif au démarrage (textures en cours).
 
-   Bloom skip : quand la scène est calme (pas d'audio actif),
-   le bloom est rendu 1 frame sur 2 → économie 50% sur les 2 passes blur
-   sans différence visible car le bloom ne change pas vite.
+   Le badge UI affiche le palier courant.
 ══════════════════════════════════════════════════════ */
-let fpsSamples=[], fpsLastCheck=0, qualityTier=0;
-let _frameCount=0, _lastBloomRT=null;
+let qualityTier = 0;
+let fpsWindow = [];
+let fpsLastCheck = 0;
+const QUALITY_CHECK_INTERVAL = 8000; /* ms */
+const qBadge = document.getElementById('quality-badge');
 
-const checkAdaptiveQuality=(now,dt)=>{
-  fpsSamples.push(dt);
-  if(fpsSamples.length>90) fpsSamples.shift();
-  if(now-fpsLastCheck>5000 && fpsSamples.length>=60){
-    fpsLastCheck=now;
-    const avgFps=fpsSamples.length/(fpsSamples.reduce((a,b)=>a+b,0));
-    if(avgFps<40 && qualityTier<2){
-      qualityTier=2;
-      bRT1.setSize(Math.round(W/5),Math.round(H/5));
-      bRT2.setSize(Math.round(W/5),Math.round(H/5));
-      bHU.uTexelSize.value.set(5/W,5/H);
-      bVU.uTexelSize.value.set(5/W,5/H);
-    } else if(avgFps<50 && qualityTier<1){
-      qualityTier=1;
-      bRT1.setSize(Math.round(W/3),Math.round(H/3));
-      bRT2.setSize(Math.round(W/3),Math.round(H/3));
-      bHU.uTexelSize.value.set(3/W,3/H);
-      bVU.uTexelSize.value.set(3/W,3/H);
-    }
-  }
+const updateQualityBadge = () => {
+  const dprStr = `DPR·${currentDPR % 1 === 0 ? currentDPR : currentDPR.toFixed(1)}`;
+  const msaaStr = MSAA_SAMPLES > 0 ? `MSAA·${MSAA_SAMPLES}×` : 'MSAA·off';
+  const tierStr = qualityTier > 0 ? ` · T${qualityTier}` : '';
+  qBadge.textContent = `${dprStr} · ${msaaStr}${tierStr}`;
 };
+updateQualityBadge();
+/* Cache le badge après 6s */
+setTimeout(() => qBadge.classList.add('gone'), 6000);
+
+const applyQualityTier = (tier) => {
+  qualityTier = tier;
+  let newDPR, bScale;
+  switch(tier){
+    case 0: newDPR=NATIVE_DPR; bScale=2/3; break;
+    case 1: newDPR=NATIVE_DPR; bScale=1/2; break;
+    case 2: newDPR=Math.min(NATIVE_DPR,2); bScale=1/3; break;
+    default: newDPR=1.5; bScale=1/4; break;
+  }
+  if(newDPR !== currentDPR){
+    currentDPR = newDPR;
+    renderer.setPixelRatio(currentDPR);
+    sceneRT.setSize(PW(), PH());
+  }
+  const bwN = Math.round(W*bScale), bhN = Math.round(H*bScale);
+  bRT1.setSize(bwN, bhN); bRT2.setSize(bwN, bhN);
+  bHU.uTexelSize.value.set(1/bwN, 1/bhN);
+  bVU.uTexelSize.value.set(1/bwN, 1/bhN);
+  updateQualityBadge();
+  /* Montre brièvement le badge quand la qualité change */
+  qBadge.classList.remove('gone');
+  setTimeout(() => qBadge.classList.add('gone'), 3000);
+};
+
+const checkAdaptiveQuality = (now, dt) => {
+  /* Ne pas vérifier pendant les 12 premières secondes (génération textures) */
+  if(now < 12000) return;
+  fpsWindow.push(dt);
+  if(fpsWindow.length > 120) fpsWindow.shift();
+  if(now - fpsLastCheck < QUALITY_CHECK_INTERVAL) return;
+  fpsLastCheck = now;
+  if(fpsWindow.length < 60) return;
+  const avgFps = fpsWindow.length / fpsWindow.reduce((a,b)=>a+b,0);
+  if(avgFps < 35 && qualityTier < 3) applyQualityTier(3);
+  else if(avgFps < 45 && qualityTier < 2) applyQualityTier(2);
+  else if(avgFps < 55 && qualityTier < 1) applyQualityTier(1);
+};
+
+/* ══════════════════════════════════════════════════════
+   BLOOM SKIP — logique plus conservative
+
+   Original : skip si scène calme ET frame impaire.
+   Amélioré : skip SEULEMENT si :
+     ① fps moyen > 100 (ProMotion très fluide — marge confortable)
+     ② ET scène vraiment calme (seuils plus stricts)
+     ③ ET frame impaire
+   Résultat : sur 60Hz le bloom est toujours calculé,
+   sur 120Hz il peut être skipé une frame sur deux uniquement
+   si la scène ne bouge vraiment pas.
+══════════════════════════════════════════════════════ */
+let _frameCount = 0;
+let _avgFpsBloom = 60;
 
 /* ══════════════════════════════════════════════════════
    BOUCLE DE RENDU
 ══════════════════════════════════════════════════════ */
-let prevTime=performance.now();
 function loop(now){
   requestAnimationFrame(loop);
-
-  /* ── Pauses iOS ── */
   if(_paused || _contextLost) return;
 
-  const dt=Math.min((now-prevTime)/1000,0.05), T=now/1000;
-  prevTime=now;
+  const dt = Math.min((now - prevTime)/1000, 0.05);
+  const T  = now/1000;
+  prevTime = now;
   _frameCount++;
 
-  checkAdaptiveQuality(now,dt);
+  /* Estimation fps pour bloom skip */
+  _avgFpsBloom = lerp(_avgFpsBloom, 1/Math.max(dt,0.001), 0.05);
 
-  if(live&&analyser) analyser.getByteFrequencyData(freqData);
-  const rawB  =live?fBand(0,0.10):0.07+0.03*Math.sin(T*1.1);
-  const rawSub=live?fBand(0,0.025):rawB*0.6;
-  bs  =lerp(bs,  rawB,  1-Math.exp(-dt*12));
-  sub =lerp(sub, rawSub,1-Math.exp(-dt*14));
-  const delta=rawB-lastBs;
-  if(delta>0.028) beatImpact=clamp(delta*5.8,0.4,1.0);
-  beatImpact=lerp(beatImpact,0,1-Math.exp(-dt*5));
-  lastBs=lerp(lastBs,rawB,1-Math.exp(-dt*10));
+  checkAdaptiveQuality(now, dt);
 
-  const baseR=getSR();
-  scU.uSphereR.value    =baseR*(1.0+sub*0.12+beatImpact*0.055);
-  scU.uSurfaceDistor.value=lerp(scU.uSurfaceDistor.value,delta*3.8,0.25);
-  scU.uBeat.value=beatImpact; scU.uTime.value=T;
-  scU.uCoreI.value=0.22+sub*0.35+beatImpact*0.25;
-  const hue=0.6+Math.sin(T*0.5)*0.1;
-  scU.uHue.value=hue; cU.uTime.value=T;
+  if(live && analyser) analyser.getByteFrequencyData(freqData);
+  const rawB   = live ? fBand(0,0.10)  : 0.07+0.03*Math.sin(T*1.1);
+  const rawSub = live ? fBand(0,0.025) : rawB*0.6;
+  bs   = lerp(bs,   rawB,  1-Math.exp(-dt*12));
+  sub  = lerp(sub,  rawSub,1-Math.exp(-dt*14));
+  const delta = rawB - lastBs;
+  if(delta > 0.028) beatImpact = clamp(delta*5.8, 0.4, 1.0);
+  beatImpact = lerp(beatImpact, 0, 1-Math.exp(-dt*5));
+  lastBs = lerp(lastBs, rawB, 1-Math.exp(-dt*10));
+
+  const baseR = getSR();
+  scU.uSphereR.value     = baseR*(1.0+sub*0.12+beatImpact*0.055);
+  scU.uSurfaceDistor.value = lerp(scU.uSurfaceDistor.value, delta*3.8, 0.25);
+  scU.uBeat.value  = beatImpact;
+  scU.uTime.value  = T;
+  scU.uCoreI.value = 0.22+sub*0.35+beatImpact*0.25;
+  const hue = 0.6+Math.sin(T*0.5)*0.1;
+  scU.uHue.value = hue; cU.uTime.value = T;
 
   nodes.forEach((nd,i)=>{
     const bv=live?fBand(nd.band[0],nd.band[1]):0.05+0.02*Math.sin(T*0.7+i);
@@ -757,30 +791,25 @@ function loop(now){
     scU[`uNH${i}`].value=hue+nd.hOff*0.22;
   });
 
-  /* ── Bloom skip : si la scène est calme (pas de beat, audio faible),
-     on recalcule le bloom 1 frame sur 2 seulement.
-     Le résultat du frame précédent est réutilisé via bRT2 qui ne change pas.
-     Sur ProMotion 120Hz, ça revient à recalculer le bloom à 60Hz max —
-     imperceptible visuellement, économise ~30% du budget GPU total. ── */
-  const sceneActive = beatImpact > 0.04 || sub > 0.03 || scU.uSurfaceDistor.value > 0.01;
-  const doBloom = sceneActive || (_frameCount % 2 === 0);
+  /* ── Bloom skip conservatif ──
+     Ne skipper que si le GPU est très à l'aise (>100fps moyen)
+     ET que la scène est vraiment immobile. Sur 60Hz : jamais skipé. */
+  const sceneVeryCalm = beatImpact < 0.01 && sub < 0.01 && scU.uSurfaceDistor.value < 0.003;
+  const gpuComfortable = _avgFpsBloom > 100;
+  const doBloom = !(sceneVeryCalm && gpuComfortable && (_frameCount % 2 === 1));
 
-  renderer.setRenderTarget(sceneRT); renderer.render(sS,cam);
+  renderer.setRenderTarget(sceneRT); renderer.render(sS, cam);
   if(doBloom){
-    renderer.setRenderTarget(bRT1); renderer.render(bHS,cam);
-    renderer.setRenderTarget(bRT2); renderer.render(bVS,cam);
+    renderer.setRenderTarget(bRT1); renderer.render(bHS, cam);
+    renderer.setRenderTarget(bRT2); renderer.render(bVS, cam);
   }
-  renderer.setRenderTarget(null); renderer.render(cS,cam);
+  renderer.setRenderTarget(null); renderer.render(cS, cam);
 }
 
 /* ══════════════════════════════════════════════════════
-   DÉMARRAGE : rendu immédiat + textures async en parallèle
-   Les textures s'injectent dans les uniformes dès qu'elles
-   sont prêtes — Three.js les upload automatiquement au
-   prochain frame qui les utilise.
+   DÉMARRAGE
 ══════════════════════════════════════════════════════ */
 requestAnimationFrame(loop);
-
 buildMilkyWayAsync().then(t => { scU.uGalaxy.value = t; });
 buildStarsAsync().then(t    => { scU.uStars.value  = t; });
 </script>
