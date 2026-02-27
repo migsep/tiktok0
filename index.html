@@ -181,7 +181,28 @@ document.getElementById('micBtn').onclick = async () => {
   } catch(err) { showToast('Accès micro refusé<br>'+err.message,4000); }
 };
 
-document.getElementById('fileBtn').onclick = () => document.getElementById('fileInput').click();
+document.getElementById('fileBtn').onclick = () => {
+  /* ── Déverrouillage iOS : l'AudioContext DOIT être créé et resumed
+        dans le handler synchrone du geste utilisateur (le clic sur le bouton).
+        Si on attend le onchange du file input, iOS refuse le resume. ── */
+  if(!actx || actx.state==='closed'){
+    actx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  /* resume() sans await — on déclenche le déverrouillage ici, dans le geste. */
+  actx.resume();
+
+  /* Jouer un tampon silencieux d'une sample : technique standard pour
+     débloquer l'AudioContext sur iOS (certaines versions l'exigent). */
+  try {
+    const buf = actx.createBuffer(1, 1, 22050);
+    const src = actx.createBufferSource();
+    src.buffer = buf;
+    src.connect(actx.destination);
+    src.start(0);
+  } catch(_){}
+
+  document.getElementById('fileInput').click();
+};
 
 document.getElementById('fileInput').onchange = async e => {
   const f=e.target.files[0]; if(!f) return;
