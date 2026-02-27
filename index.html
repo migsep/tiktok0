@@ -365,7 +365,7 @@ const buildMilkyWayAsync = () => new Promise(resolve => {
       const bF=lerp(lerp(bEdge, bC, colorMaskS), 0.12, dust*0.55);
 
       /* Luminosité : gamma plus fort (0.80) + scale réduit (0.55) */
-      const finalB = Math.pow(clamp(bright,0,1), 0.80) * 0.55;
+      const finalB = Math.pow(clamp(bright,0,1), 0.80) * 0.68;
       /* Alpha doux : ×2.8 — fondu plus progressif dans le noir */
       const alpha  = clamp(bright*2.8, 0, 1);
       px[idx]  =Math.min(255,rF*finalB*255);
@@ -456,6 +456,23 @@ varying vec2 vUv;
 float schlick(float c,float F0){return F0+(1.0-F0)*pow(clamp(1.0-c,0.0,1.0),5.0);}
 float nodeG(vec2 p,vec2 c,float r){float d=length(p-c);return exp(-d*d/(r*r));}
 
+/* ── FBM procédural pour micro-imperfections de surface (verre soufflé) ──
+   Tournant en GLSL sur GPU — coût négligeable, résultat très organique. */
+float ghash(vec2 p){
+  p=fract(p*vec2(234.34,435.345));
+  p+=dot(p,p+34.23);
+  return fract(p.x*p.y);
+}
+float gnoise(vec2 p){
+  vec2 i=floor(p),f=fract(p),u=f*f*(3.0-2.0*f);
+  return mix(mix(ghash(i),ghash(i+vec2(1,0)),u.x),
+             mix(ghash(i+vec2(0,1)),ghash(i+vec2(1,1)),u.x),u.y)*2.0-1.0;
+}
+float gfbm(vec2 p){
+  return gnoise(p)*0.500+gnoise(p*2.03+1.31)*0.250
+        +gnoise(p*4.11-0.72)*0.125+gnoise(p*8.27+3.14)*0.063;
+}
+
 
 
 void main(){
@@ -479,10 +496,15 @@ void main(){
     /* La galaxie est derrière l'orbe — pas de réfraction de la texture dans le verre */
     vec3 glass=vec3(0.0);
 
-    /* surf perturbe la normale de surface → l'orbe ondule visuellement au rythme
-       de l'audio exactement comme dans la version originale, sans avoir besoin
-       de la réfraction. On l'applique aux calculs Fresnel et spéculaires. */
-    vec3 pertN = normalize(hitN + vec3(surf * 1.4, 0.0));
+    /* ── Micro-imperfections de surface via FBM GLSL ──
+       surfUV mappe la position 3D sphérique sur un espace 2D cohérent.
+       Les deux composantes fbm donnent un bump légèrement animé → verre soufflé. */
+    vec2 surfUV = hitN.xy * 3.8 + hitN.yz * 2.6;
+    float bumpX = gfbm(surfUV + vec2(uTime*0.07, 0.0)) * 0.048;
+    float bumpY = gfbm(surfUV + vec2(0.0, uTime*0.055) + 1.73) * 0.048;
+    vec3 microN  = normalize(hitN + vec3(bumpX, bumpY, 0.0));
+    /* surf audio-réactif combiné avec la micro-texture statique */
+    vec3 pertN = normalize(microN + vec3(surf * 1.4, 0.0));
 
     {
       float n=1.520;
@@ -495,16 +517,18 @@ void main(){
         vec3 eR2=refract(inR,-N2,n);
         float valid=step(0.001,length(eR2));
         float energy=schlick(abs(dot(rDir,-normalize(Pex))),0.04)*(1.0-schlick(abs(dot(inR,-N2)),0.04))*valid;
-        /* Réflexion interne : on supprime les lookups texture2D(uGalaxy,...)
-           qui projetaient la bande lactée sur la surface de l'orbe (effet "devant").
-           On conserve uniquement la couleur plasma chromatique de la réflexion interne. */
         vec3 ring=hsl2rgb(uHue+atan(P2.y,P2.x)/(2.0*3.14159)*0.35,0.9,0.7)*0.15*energy;
         glass+=ring*energy*0.28;
       }
     }
 
     float nR=sR*0.22;
-    vec3 plasma=hsl2rgb(uHue,1.0,0.88)*exp(-d2/(sR2*0.28))*uCoreI;
+
+    /* ── Cœur plasma légèrement décentré — dérive lente et asymétrique ──
+       Évite la symétrie parfaite "boule plastique", donne un aspect
+       plus organique comme une inclusion dans du verre. */
+    vec2 coreOff = vec2(sin(uTime*0.13)*0.022, cos(uTime*0.09)*0.016) * sR;
+    vec3 plasma=hsl2rgb(uHue,1.0,0.88)*exp(-dot(p-coreOff,p-coreOff)/(sR2*0.28))*uCoreI;
     plasma+=hsl2rgb(uNH0,0.95,0.72)*nodeG(p,uN0.xy,nR)*uN0.z;
     plasma+=hsl2rgb(uNH1,0.95,0.72)*nodeG(p,uN1.xy,nR)*uN1.z;
     plasma+=hsl2rgb(uNH2,0.95,0.72)*nodeG(p,uN2.xy,nR)*uN2.z;
@@ -516,8 +540,17 @@ void main(){
 
     glass+=hsl2rgb(uHue+0.07,0.95,0.72)*pow(clamp(1.0-pertN.z,0.0,1.0),2.2)*(0.08+uSurfaceDistor*0.55);
     glass=mix(glass,vec3(1.0),schlick(pertN.z,0.04)*0.38);
-    glass+=pow(max(0.0,dot(pertN,normalize(vec3(-0.5,0.6,1.0)))),110.0);
-    glass+=pow(max(0.0,dot(pertN,normalize(vec3(0.4,-0.5,0.8)))),55.0)*0.18;
+
+    /* ── Spéculaires dérivants et colorés ──
+       Les deux highlights tournent lentement autour de l'orbe à des
+       vitesses différentes → jamais figés → naturel.
+       Colorés légèrement par uHue → cohérence chromatique avec le plasma. */
+    float lt1=uTime*0.07;
+    float lt2=uTime*0.05+1.2;
+    vec3 lightA=normalize(vec3(cos(lt1)*0.55-0.05, sin(lt1)*0.50+0.28, 0.88));
+    vec3 lightB=normalize(vec3(cos(lt2)*0.48+0.18, sin(lt2)*0.38-0.18, 0.80));
+    glass+=hsl2rgb(uHue+0.04,0.25,1.0)*pow(max(0.0,dot(pertN,lightA)),120.0);
+    glass+=hsl2rgb(uHue-0.07,0.35,0.92)*pow(max(0.0,dot(pertN,lightB)),52.0)*0.20;
     col=glass;
   }
 
