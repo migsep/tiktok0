@@ -691,7 +691,7 @@ function loop(now){
   lastBs = lerp(lastBs, rawB, 1-Math.exp(-dt*10));
 
   const baseR = getSR();
-  scU.uSphereR.value     = baseR*(1.0+sub*0.04+beatImpact*0.18);
+  scU.uSphereR.value     = baseR*(1.0+sub*0.28+beatImpact*0.14);
   scU.uSurfaceDistor.value = lerp(scU.uSurfaceDistor.value, delta*3.8, 0.25);
   scU.uBeat.value  = beatImpact;
   scU.uTime.value  = T;
