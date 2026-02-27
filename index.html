@@ -480,6 +480,11 @@ void main(){
     /* La galaxie est derrière l'orbe — pas de réfraction de la texture dans le verre */
     vec3 glass=vec3(0.0);
 
+    /* surf perturbe la normale de surface → l'orbe ondule visuellement au rythme
+       de l'audio exactement comme dans la version originale, sans avoir besoin
+       de la réfraction. On l'applique aux calculs Fresnel et spéculaires. */
+    vec3 pertN = normalize(hitN + vec3(surf * 1.4, 0.0));
+
     {
       float n=1.520;
       vec3 rDir=refract(vec3(0.0,0.0,-1.0),hitN,1.0/n);
@@ -510,10 +515,10 @@ void main(){
     plasma+=hsl2rgb(uNH6,0.95,0.72)*nodeG(p,uN6.xy,nR)*uN6.z;
     glass+=plasma;
 
-    glass+=hsl2rgb(uHue+0.07,0.95,0.72)*pow(clamp(1.0-hitN.z,0.0,1.0),2.2)*(0.08+uSurfaceDistor*0.55);
-    glass=mix(glass,vec3(1.0),schlick(hitN.z,0.04)*0.38);
-    glass+=pow(max(0.0,dot(hitN,normalize(vec3(-0.5,0.6,1.0)))),110.0);
-    glass+=pow(max(0.0,dot(hitN,normalize(vec3(0.4,-0.5,0.8)))),55.0)*0.18;
+    glass+=hsl2rgb(uHue+0.07,0.95,0.72)*pow(clamp(1.0-pertN.z,0.0,1.0),2.2)*(0.08+uSurfaceDistor*0.55);
+    glass=mix(glass,vec3(1.0),schlick(pertN.z,0.04)*0.38);
+    glass+=pow(max(0.0,dot(pertN,normalize(vec3(-0.5,0.6,1.0)))),110.0);
+    glass+=pow(max(0.0,dot(pertN,normalize(vec3(0.4,-0.5,0.8)))),55.0)*0.18;
     col=glass;
   }
 
