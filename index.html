@@ -349,32 +349,145 @@ const fbm = (x,y,oct,seed) => {
   return v/mx;
 };
 
-/* Higher-res galaxy: 1024×512 — richer detail on Retina */
+/* ─────────────────────────────────────────────────────────
+   GALAXY TEXTURE — astrophysically coloured Milky Way
+   Layers (back to front):
+     1. Deep black space (hard transparent cutoff)
+     2. Spiral arm glow — cool blue-white (young OB stars)
+     3. Dust lanes — warm absorbing brown/dark, cuts arm brightness
+     4. Inter-arm diffuse haze — faint violet-grey
+     5. Bulge/core — amber-gold ellipsoid (old red-giant population)
+     6. HII nebula blobs — magenta/rose emission regions in arms
+     7. Core super-centre — blue-white intense peak
+───────────────────────────────────────────────────────── */
 const buildGalaxy = () => {
   const GW=1024, GH=512;
   const cv=document.createElement('canvas'); cv.width=GW; cv.height=GH;
   const cx=cv.getContext('2d');
   const id=cx.createImageData(GW,GH), px=id.data;
+
+  /* Galaxy tilt angle */
   const bA=-0.48, cosA=Math.cos(bA), sinA=Math.sin(bA);
-  for(let py=0;py<GH;py++) for(let qx=0;qx<GW;qx++){
-    const i=(py*GW+qx)*4;
-    const nx=(qx/GW-0.5)*2, ny=(py/GH-0.5)*2*(GH/GW);
-    const al=nx*cosA+ny*sinA, pe=-nx*sinA+ny*cosA;
-    const coreDist=Math.sqrt(nx*nx*0.8+ny*ny*1.4);
-    const coreGlow=Math.exp(-coreDist*coreDist*14);
-    // Extra dust lanes
-    const dustN = fbm(al*3.1+1.2, pe*4.0, 3, 42);
-    const bN=fbm(al*1.8+0.5,0.5,6,11), bW=0.18+bN*0.14, bF=Math.exp(-(pe*pe)/(2*bW*bW));
-    const bD=bF*(0.3+fbm(al*1.4+0.3,pe*2.5,5,77)*0.7 + dustN*0.15);
-    // Slight warm tint at core, cooler on arms
-    const tot=(bD+coreGlow*1.3)*0.78;
-    if(tot<0.001){px[i+3]=0;continue;}
-    const warmth = coreGlow * 0.3;
-    px[i]  = Math.min(255, (175+warmth*40)*tot);
-    px[i+1]= Math.min(255, (185+warmth*10)*tot);
-    px[i+2]= Math.min(255, 255*tot);
-    px[i+3]= Math.min(255, tot*255);
+
+  /* Seeded random for deterministic nebulae positions */
+  let rngState=12345;
+  const rng=()=>{ rngState=Math.imul(rngState^(rngState>>>15),0x2c1b3c6d); rngState=Math.imul(rngState^(rngState>>>12),0x297a2d39); rngState^=rngState>>>15; return (rngState>>>0)/0xffffffff; };
+
+  /* Pre-bake 18 HII nebula blobs along the spiral arms */
+  const nebulae=[];
+  for(let k=0;k<18;k++){
+    const arm   = k%2;                          /* two arms */
+    const t     = rng()*1.4+0.15;               /* position along arm  */
+    const theta = t*2.8 + arm*Math.PI + rng()*0.6;
+    const r     = t*0.32+0.08 + rng()*0.05;     /* radial distance    */
+    nebulae.push({
+      al:  r * Math.cos(theta),                 /* along-arm coord    */
+      pe:  r * Math.sin(theta) * 0.06 + (rng()-0.5)*0.012,/* perp offset */
+      str: 0.3+rng()*0.5,
+      hue: rng() < 0.7 ? 0.92+rng()*0.08 : 0.55+rng()*0.08, /* rose vs teal */
+      sz:  0.018+rng()*0.022
+    });
   }
+
+  for(let py=0;py<GH;py++) for(let qx=0;qx<GW;qx++){
+    const idx=(py*GW+qx)*4;
+    const nx=(qx/GW-0.5)*2;
+    const ny=(py/GH-0.5)*2*(GH/GW);
+    /* Rotate into galaxy frame */
+    const al= nx*cosA+ny*sinA;
+    const pe=-nx*sinA+ny*cosA;
+
+    /* Radial distances */
+    const coreDist = Math.sqrt(nx*nx*0.75+ny*ny*1.5);
+    const diskDist = Math.sqrt(al*al+pe*pe*0.3);
+
+    /* ── 1. Spiral arm profile ──
+       Two-arm log spiral:  pe ≈ 0  at  al·sin(log(r)·k) = 0
+       We use a gaussian band around pe=0 whose width varies with noise */
+    const armNoise = fbm(al*2.1+0.4, 0.5, 6, 11);
+    const armWidth = 0.14 + armNoise*0.16;
+    /* Both arms (offset π in al-space is equivalent to second arm) */
+    const arm1 = Math.exp(-(pe*pe)/(2*armWidth*armWidth));
+    const arm2 = Math.exp(-((pe-0.0)*(pe-0.0))/(2*armWidth*armWidth)); /* same plane, different radial pos */
+    /* Taper arm brightness with distance from center */
+    const armFalloff = Math.exp(-diskDist*diskDist*2.2);
+    const armDensity = arm1 * armFalloff
+                     * (0.28 + fbm(al*1.5+0.3, pe*3.0, 5, 77)*0.72);
+
+    /* ── 2. Bulge — oblate ellipsoid, amber-gold ── */
+    const bulgeDist = Math.sqrt(nx*nx*1.1+ny*ny*2.0);
+    const bulge     = Math.exp(-bulgeDist*bulgeDist*10.5)*0.9
+                    + Math.exp(-bulgeDist*bulgeDist*38.0)*0.4;  /* tight peak + soft halo */
+
+    /* ── 3. Dust lanes — dark filaments cutting across arms ── */
+    const dust1 = fbm(al*3.4+1.7, pe*5.2, 4, 42);
+    const dust2 = fbm(al*4.1-0.8, pe*3.8+0.5, 3, 91);
+    /* Dust is strongest inside the arm */
+    const dustMask = armDensity * Math.max(0, (dust1-0.45)*2.0) * 0.7
+                   + armDensity * Math.max(0, (dust2-0.52)*1.8) * 0.4;
+
+    /* ── 4. Diffuse inter-arm haze ── */
+    const haze = fbm(al*0.9+2.0, pe*1.1, 3, 33)
+               * Math.exp(-diskDist*diskDist*3.5) * 0.12;
+
+    /* ── 5. Total stellar density ── */
+    const stellarDens = Math.max(0, armDensity - dustMask) + bulge*0.55 + haze;
+    if(stellarDens < 0.004){ px[idx+3]=0; continue; }
+
+    /* ── 6. Colour mixing ──
+       Core: warm amber  rgb(255, 210, 120)
+       Arms: cool blue   rgb(160, 190, 255)
+       Haze: violet-grey rgb(140, 145, 200)
+       Dust: dark brown  (subtracted)                       */
+    const coreWeight  = clamp(bulge*1.8, 0, 1);
+    const armWeight   = clamp(armDensity*2.5, 0, 1) * (1-coreWeight*0.6);
+
+    /* Arm brightness modulation — slightly dimmer between sub-arms */
+    const subArmMod = 0.75 + fbm(al*4.0, pe*2.0, 3, 55)*0.25;
+
+    let r = lerp(lerp(0.55, 0.63, armWeight), 1.00, coreWeight);   /* amber peak at core */
+    let g = lerp(lerp(0.75, 0.82, armWeight), 0.82, coreWeight);
+    let b = lerp(lerp(1.00, 0.62, armWeight), 0.47, coreWeight);   /* blue arms → amber core */
+
+    /* Dust darkens & reddens */
+    const dustRed   = dustMask * 1.8;
+    r -= dustRed * 0.15;
+    g -= dustRed * 0.28;
+    b -= dustRed * 0.38;
+
+    /* ── 7. HII nebulae blobs ── */
+    let nebR=0, nebG=0, nebB=0;
+    for(let k=0;k<nebulae.length;k++){
+      const nb=nebulae[k];
+      const dal=al-nb.al, dpe=pe-nb.pe;
+      const nd2=dal*dal+dpe*dpe;
+      if(nd2 > nb.sz*nb.sz*16) continue; /* skip distant (perf) */
+      const nebStr = Math.exp(-nd2/(nb.sz*nb.sz)) * nb.str * armDensity * 2.5;
+      if(nb.hue > 0.85){ /* rose/magenta HII */
+        nebR += nebStr * 0.95; nebG += nebStr * 0.15; nebB += nebStr * 0.45;
+      } else {           /* teal/cyan OIII   */
+        nebR += nebStr * 0.05; nebG += nebStr * 0.75; nebB += nebStr * 0.85;
+      }
+    }
+    r += nebR; g += nebG; b += nebB;
+
+    /* ── 8. Core super-centre bright spike ── */
+    const superCore = Math.exp(-coreDist*coreDist*120) * 1.2;
+    r += superCore*0.9; g += superCore*0.95; b += superCore;
+
+    /* Apply density (contrast boost with gamma) */
+    const dens = Math.pow(clamp(stellarDens*1.25, 0, 1), 0.85);
+    r *= dens; g *= dens; b *= dens;
+
+    /* Gentle bloom into pure black — sharp edge at disk limit */
+    const alpha = clamp(stellarDens*3.5, 0, 1);
+
+    px[idx]  = Math.min(255, r*255);
+    px[idx+1]= Math.min(255, g*255);
+    px[idx+2]= Math.min(255, b*255);
+    px[idx+3]= Math.min(255, alpha*255);
+  }
+
   cx.putImageData(id,0,0);
   const t=new THREE.CanvasTexture(cv);
   t.minFilter=THREE.LinearMipmapLinearFilter;
@@ -382,32 +495,85 @@ const buildGalaxy = () => {
   return t;
 };
 
-/* Richer star field: bright stars with glow halos */
+/* ─────────────────────────────────────────────────────────
+   STAR FIELD — three populations like a real sky
+   1. Background dust (thousands of tiny dim stars)
+   2. Mid-magnitude stars with spectral tint (B/A/F/G/K/M types)
+   3. Bright foreground stars with diffraction spikes + glow
+───────────────────────────────────────────────────────── */
 const buildStars = () => {
-  const cv=document.createElement('canvas'); cv.width=1024; cv.height=1024;
+  const S=1024;
+  const cv=document.createElement('canvas'); cv.width=S; cv.height=S;
   const cx=cv.getContext('2d');
-  // Base star dust
-  for(let i=0;i<2500;i++){
-    const x=Math.random()*1024, y=Math.random()*1024;
-    const r=Math.random()*0.6;
-    cx.fillStyle=`rgba(255,255,255,${Math.random()*0.45})`;
-    cx.beginPath(); cx.arc(x,y,r,0,Math.PI*2); cx.fill();
+
+  /* Spectral colours: O/B blue → G yellow → M red */
+  const spectral=[
+    [180,210,255], /* O/B — hot blue-white  */
+    [210,228,255], /* A   — white-blue      */
+    [255,248,210], /* F   — warm white      */
+    [255,236,170], /* G   — yellow (Sun)    */
+    [255,200,110], /* K   — orange          */
+    [255,160, 70], /* M   — cool red        */
+  ];
+
+  /* 1. Dust — tiny, barely visible */
+  for(let i=0;i<3200;i++){
+    const x=Math.random()*S, y=Math.random()*S;
+    cx.fillStyle=`rgba(200,210,255,${0.05+Math.random()*0.18})`;
+    cx.beginPath(); cx.arc(x,y,Math.random()*0.55,0,Math.PI*2); cx.fill();
   }
-  // Bright stars with diffraction glow
-  for(let i=0;i<120;i++){
-    const x=Math.random()*1024, y=Math.random()*1024;
-    const bright=0.4+Math.random()*0.6;
-    const size=0.5+Math.random()*1.5;
-    // Glow halo
-    const g=cx.createRadialGradient(x,y,0,x,y,size*5);
-    g.addColorStop(0, `rgba(210,215,255,${bright*0.6})`);
-    g.addColorStop(0.3, `rgba(180,200,255,${bright*0.2})`);
-    g.addColorStop(1, 'rgba(0,0,0,0)');
-    cx.fillStyle=g; cx.fillRect(x-size*5,y-size*5,size*10,size*10);
-    // Core
+
+  /* 2. Mid-magnitude — coloured, 1px */
+  for(let i=0;i<600;i++){
+    const x=Math.random()*S, y=Math.random()*S;
+    const sp=spectral[Math.floor(Math.pow(Math.random(),1.8)*spectral.length)];
+    const a=0.15+Math.random()*0.45;
+    cx.fillStyle=`rgba(${sp[0]},${sp[1]},${sp[2]},${a})`;
+    cx.beginPath(); cx.arc(x,y,0.6+Math.random()*0.7,0,Math.PI*2); cx.fill();
+  }
+
+  /* 3. Bright foreground stars with diffraction cross + soft halo */
+  for(let i=0;i<55;i++){
+    const x=Math.random()*S, y=Math.random()*S;
+    const sp=spectral[Math.floor(Math.random()*4)]; /* mostly hot types */
+    const bright=0.55+Math.random()*0.45;
+    const size=0.8+Math.random()*2.2;
+
+    /* Outer soft glow */
+    const g=cx.createRadialGradient(x,y,0,x,y,size*7);
+    g.addColorStop(0,   `rgba(${sp[0]},${sp[1]},${sp[2]},${bright*0.55})`);
+    g.addColorStop(0.25,`rgba(${sp[0]},${sp[1]},${sp[2]},${bright*0.15})`);
+    g.addColorStop(1,   'rgba(0,0,0,0)');
+    cx.fillStyle=g; cx.fillRect(x-size*7,y-size*7,size*14,size*14);
+
+    /* Diffraction spike (horizontal) */
+    const spikeLen=size*12;
+    const sg=cx.createLinearGradient(x-spikeLen,y,x+spikeLen,y);
+    sg.addColorStop(0,  'rgba(255,255,255,0)');
+    sg.addColorStop(0.4,`rgba(255,255,255,${bright*0.2})`);
+    sg.addColorStop(0.5,`rgba(255,255,255,${bright*0.55})`);
+    sg.addColorStop(0.6,`rgba(255,255,255,${bright*0.2})`);
+    sg.addColorStop(1,  'rgba(255,255,255,0)');
+    cx.save(); cx.translate(x,y);
+    cx.fillStyle=sg;
+    cx.fillRect(-spikeLen,-0.5,spikeLen*2,1);
+    /* Vertical spike (slightly weaker) */
+    cx.rotate(Math.PI/2);
+    const sg2=cx.createLinearGradient(-spikeLen,0,spikeLen,0);
+    sg2.addColorStop(0,  'rgba(255,255,255,0)');
+    sg2.addColorStop(0.45,`rgba(255,255,255,${bright*0.12})`);
+    sg2.addColorStop(0.5, `rgba(255,255,255,${bright*0.35})`);
+    sg2.addColorStop(0.55,`rgba(255,255,255,${bright*0.12})`);
+    sg2.addColorStop(1,  'rgba(255,255,255,0)');
+    cx.fillStyle=sg2;
+    cx.fillRect(-spikeLen,-0.5,spikeLen*2,1);
+    cx.restore();
+
+    /* Star core */
     cx.fillStyle=`rgba(255,255,255,${bright})`;
-    cx.beginPath(); cx.arc(x,y,size*0.5,0,Math.PI*2); cx.fill();
+    cx.beginPath(); cx.arc(x,y,size*0.45,0,Math.PI*2); cx.fill();
   }
+
   const t=new THREE.CanvasTexture(cv);
   t.minFilter=THREE.LinearMipmapLinearFilter;
   t.generateMipmaps=true;
@@ -472,10 +638,17 @@ void main(){
   float d2  = dot(p, p);
 
   /* ── Background ── */
-  vec3 col = texture2D(uGalaxy, vUv).rgb * 0.52
-           + texture2D(uStars,  vUv).rgb * 0.38;
+  vec4 galSample  = texture2D(uGalaxy, vUv);
+  vec3 starSample = texture2D(uStars,  vUv).rgb;
 
-  /* Caustic pool on background floor */
+  /* Galaxy composited over pure black (respects alpha — dark areas stay black) */
+  vec3 col = galSample.rgb * galSample.a * 0.88     /* galaxy with proper alpha   */
+           + starSample * 0.42;                     /* stars on top               */
+
+  /* Very subtle violet ambient so deep black isn't completely dead */
+  col += vec3(0.008, 0.006, 0.018);
+
+  /* Caustic pool cast by sphere onto background */
   vec2 causticC = vec2(0.22,-0.22) * sR;
   col += hsl2rgb(uHue, 0.55, 0.85) * exp(-length(p - causticC) * 11.0) * 0.07;
 
