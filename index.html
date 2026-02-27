@@ -47,16 +47,23 @@ html,body{width:100%;height:100%;overflow:hidden;background:#000;cursor:none;
   color:rgba(180,155,225,.18);font-family:'Didact Gothic',sans-serif;font-size:7px;
   letter-spacing:.3em;text-transform:uppercase;z-index:10;transition:opacity 1s}
 #quality-badge.gone{opacity:0}
+/* Conteneur caché pour les éléments média iOS — doit être dans le DOM */
+#media-container{position:fixed;width:1px;height:1px;opacity:0;
+  pointer-events:none;overflow:hidden;top:-2px;left:-2px;}
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
+<!-- Conteneur DOM requis par iOS Safari pour Web Audio API + MediaElement -->
+<div id="media-container"></div>
 <div id="hint">2× tap — contrôles</div>
 <div id="quality-badge" id="qb">DPR·3 · MSAA·4×</div>
 <div id="ui">
   <button class="btn" id="micBtn">Micro</button>
   <button class="btn" id="fileBtn">Charger audio</button>
-  <input type="file" id="fileInput" accept="audio/*,video/*">
+  <!-- ① accept étendu : formats explicites pour le sélecteur iOS -->
+  <input type="file" id="fileInput"
+    accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac,.opus,video/*,.mp4,.mov,.m4v,.webm,.mkv">
 </div>
 <div id="track"></div>
 <div id="toast"></div>
@@ -71,12 +78,6 @@ const clamp = (v,lo,hi) => Math.max(lo,Math.min(hi,v));
 
 let W = window.innerWidth, H = window.innerHeight;
 
-/* ═══════════════════════════════════════════════════════════════════
-   DPR NATIF — iPhone 15 Pro/Max : DPR=3 exploité pleinement.
-   Un système thermique adaptatif peut le réduire à 2 puis 1.5
-   si la température du GPU monte (détecté via frame time).
-   On commence toujours au maximum natif.
-═══════════════════════════════════════════════════════════════════ */
 let currentDPR = Math.min(window.devicePixelRatio || 1, 3);
 const NATIVE_DPR = currentDPR;
 
@@ -95,6 +96,8 @@ let actx, analyser, freqData, live = false;
 let bs=0, sub=0, lastBs=0, beatImpact=0;
 let currentBufSrc=null, currentMediaEl=null, currentObjUrl=null;
 
+const mediaContainer = document.getElementById('media-container');
+
 const fBand = (lo,hi) => {
   if(!freqData||!freqData.length) return 0;
   const a=Math.floor(lo*freqData.length), b=Math.max(Math.floor(hi*freqData.length),a+1);
@@ -109,15 +112,62 @@ const ensureActx = async () => {
   if(!actx||actx.state==='closed') actx=new(window.AudioContext||window.webkitAudioContext)();
   if(actx.state==='suspended') await actx.resume();
 };
+
+/* ② stopPrev : nettoie aussi le DOM du mediaContainer */
 const stopPrev = () => {
   if(currentBufSrc){try{currentBufSrc.stop();}catch(_){}currentBufSrc=null;}
-  if(currentMediaEl){currentMediaEl.pause();currentMediaEl.src='';currentMediaEl=null;}
+  if(currentMediaEl){
+    currentMediaEl.pause();
+    currentMediaEl.src='';
+    if(currentMediaEl.parentNode) currentMediaEl.parentNode.removeChild(currentMediaEl);
+    currentMediaEl=null;
+  }
   if(currentObjUrl){try{URL.revokeObjectURL(currentObjUrl);}catch(_){}currentObjUrl=null;}
 };
+
 const goLive = () => {
   live=true;
   document.getElementById('ui').classList.add('hidden');
   document.getElementById('hint').classList.add('gone');
+};
+
+/* ③ Utilitaire : crée un élément média, l'attache au DOM (requis iOS),
+      attend qu'il soit prêt à jouer, puis connecte Web Audio. */
+const attachAndPlay = async (el, objUrl, isVideo) => {
+  /* Attributs indispensables iOS */
+  el.setAttribute('playsinline', '');
+  el.setAttribute('webkit-playsinline', '');
+  el.playsInline = true;
+  el.loop = true;
+  el.volume = 1.0;
+  el.muted = false;           /* explicitement non muté */
+  el.crossOrigin = 'anonymous'; /* évite les erreurs CORS sur certains builds */
+  el.src = objUrl;
+
+  /* ④ OBLIGATOIRE iOS : l'élément doit être dans le DOM
+        avant createMediaElementSource */
+  mediaContainer.appendChild(el);
+  currentMediaEl = el;
+
+  /* Tenter la lecture — sur iOS elle ne peut partir que depuis un geste utilisateur,
+     ce qui est bien le cas ici (on vient du onChange du file input). */
+  try { await el.play(); } catch(err) {
+    showToast('Lecture impossible<br>' + err.message, 5000);
+    return false;
+  }
+
+  setupAnalyser();
+  try {
+    /* ⑤ createMediaElementSource ne peut être appelé qu'une fois par élément,
+          et l'élément DOIT être dans le DOM sur iOS. */
+    actx.createMediaElementSource(el).connect(analyser);
+    analyser.connect(actx.destination);
+  } catch(err) {
+    /* Si l'élément est déjà sourcé (rare), on continue quand même —
+       l'audio jouera sans visualisation plutôt que de planter. */
+    console.warn('Web Audio connect:', err);
+  }
+  return true;
 };
 
 document.getElementById('micBtn').onclick = async () => {
@@ -138,33 +188,35 @@ document.getElementById('fileInput').onchange = async e => {
   stopPrev();
   const trackEl=document.getElementById('track');
   trackEl.textContent=f.name.replace(/\.[^.]+$/,''); trackEl.style.display='block';
+
   const isVideo=f.type.startsWith('video/')||/\.(mp4|mov|m4v|webm|mkv|avi)$/i.test(f.name);
   const objUrl=URL.createObjectURL(f); currentObjUrl=objUrl;
 
-  if(isVideo){
-    const vid=document.createElement('video');
-    vid.setAttribute('playsinline',''); vid.setAttribute('webkit-playsinline','');
-    vid.playsInline=true; vid.loop=true; vid.volume=1.0; vid.src=objUrl;
-    const pp=vid.play(); currentMediaEl=vid;
-    try{await ensureActx();}catch(_){}
-    try{await pp;}catch(err){showToast('Lecture impossible<br>'+err.message,5000);return;}
-    setupAnalyser();
-    try{actx.createMediaElementSource(vid).connect(analyser);analyser.connect(actx.destination);}
-    catch(err){console.warn('Web Audio connect:',err);}
-    goLive(); return;
+  /* ⑥ On crée le contexte audio ICI, dans le gestionnaire du geste utilisateur,
+        avant tout await asynchrone — iOS l'exige. */
+  try { await ensureActx(); } catch(err) {
+    showToast('AudioContext impossible<br>'+err.message, 5000); return;
   }
 
-  await ensureActx();
-  if(f.size/1024/1024>80){
-    showToast('Gros fichier — lecture directe',2000);
-    const audio=new Audio(); audio.loop=true; audio.src=objUrl;
-    const pp=audio.play(); setupAnalyser();
-    try{await pp;}catch(_){}
-    try{actx.createMediaElementSource(audio).connect(analyser);analyser.connect(actx.destination);currentMediaEl=audio;goLive();}
-    catch(err){showToast('Lecture impossible<br>'+err.message,5000);}
+  if(isVideo){
+    const vid=document.createElement('video');
+    await attachAndPlay(vid, objUrl, true);
+    goLive();
     return;
   }
 
+  /* ── Fichiers audio ── */
+
+  /* Gros fichiers : lecture directe via élément audio dans le DOM */
+  if(f.size/1024/1024>80){
+    showToast('Gros fichier — lecture directe',2000);
+    const audio=document.createElement('audio');
+    const ok = await attachAndPlay(audio, objUrl, false);
+    if(ok) goLive();
+    return;
+  }
+
+  /* Petits fichiers : tentative decodeAudioData pour latence minimale */
   const prog=document.getElementById('progress'),progBar=document.getElementById('progress-bar');
   prog.style.display='block'; progBar.style.width='0%'; showToast('Chargement…',-1);
   try {
@@ -180,17 +232,20 @@ document.getElementById('fileInput').onchange = async e => {
     setupAnalyser(); analyser.connect(actx.destination);
     currentBufSrc=actx.createBufferSource();
     currentBufSrc.buffer=audioBuf; currentBufSrc.loop=true;
-    currentBufSrc.connect(analyser); currentBufSrc.start(0); goLive();
+    currentBufSrc.connect(analyser); currentBufSrc.start(0);
+    goLive();
   } catch(err) {
+    /* ⑦ Fallback : si decodeAudioData échoue (format non supporté par iOS),
+          on repasse sur un élément audio dans le DOM. */
     prog.style.display='none'; hideToast();
-    try{
-      const audio=new Audio(); audio.loop=true; audio.src=objUrl;
-      const pp=audio.play(); setupAnalyser();
-      try{await pp;}catch(_){}
-      actx.createMediaElementSource(audio).connect(analyser);
-      analyser.connect(actx.destination); currentMediaEl=audio; goLive();
-    }catch(err2){showToast('Lecture impossible<br>'+err2.message,6000);}
+    showToast('Fallback lecture directe…', 2000);
+    const audio=document.createElement('audio');
+    const ok = await attachAndPlay(audio, objUrl, false);
+    if(ok) goLive();
+    else showToast('Format non supporté par cet appareil', 5000);
   }
+  /* Reset input pour permettre de re-sélectionner le même fichier */
+  e.target.value='';
 };
 
 let lastTap=0;
@@ -221,21 +276,10 @@ const fbm=(x,y,oct,seed)=>{
   return v/mx;
 };
 
-/* ══════════════════════════════════════════════════════
-   RENDERER
-
-   Améliorations vs version originale :
-   ① DPR natif (3 sur iPhone 15 Pro) — plus de cap arbitraire à 2.
-     +44% de pixels → contours sub-pixel réels.
-   ② antialias:true AUSSI à DPR≥2 — le pilote WebKit peut toujours
-     en bénéficier pour le resolve MSAA final dans le compositor.
-   ③ WebGL2 en priorité pour les MSAA render targets.
-   ④ colorSpace display-p3 conservé (correct, rare).
-══════════════════════════════════════════════════════ */
 const canvas=document.getElementById('c');
 const _ctxAttrs={
   colorSpace:'display-p3',
-  antialias: true,           /* toujours ON — le GPU A-series le gère sans surcost */
+  antialias: true,
   powerPreference:'high-performance',
   alpha:false, stencil:false, depth:false,
   preserveDrawingBuffer:false,
@@ -244,7 +288,6 @@ const _ctxAttrs={
 const _gl = canvas.getContext('webgl2',_ctxAttrs) ||
             canvas.getContext('webgl', _ctxAttrs);
 
-/* Détecte WebGL2 pour activer les MSAA render targets */
 const HAS_WEBGL2 = (_gl instanceof WebGL2RenderingContext);
 
 const renderer=new THREE.WebGLRenderer({
@@ -256,7 +299,6 @@ const renderer=new THREE.WebGLRenderer({
 renderer.setPixelRatio(currentDPR);
 renderer.setSize(W,H);
 
-/* ── Gestion perte de contexte WebGL ── */
 let _contextLost = false;
 canvas.addEventListener('webglcontextlost', e => { e.preventDefault(); _contextLost = true; });
 canvas.addEventListener('webglcontextrestored', () => { window.location.reload(); });
@@ -268,9 +310,6 @@ const makePlaceholder = () => {
   const t=new THREE.CanvasTexture(c); t.minFilter=THREE.LinearFilter; return t;
 };
 
-/* ══════════════════════════════════════════════════════
-   MILKY WAY — génération async par chunks
-══════════════════════════════════════════════════════ */
 const buildMilkyWayAsync = () => new Promise(resolve => {
   const GW=2048, GH=1024;
   const cv=document.createElement('canvas'); cv.width=GW; cv.height=GH;
@@ -356,9 +395,6 @@ const buildMilkyWayAsync = () => new Promise(resolve => {
   setTimeout(step,0);
 });
 
-/* ══════════════════════════════════════════════════════
-   STAR FIELD
-══════════════════════════════════════════════════════ */
 const buildStarsAsync = () => new Promise(resolve => {
   setTimeout(()=>{
     const S=2048;
@@ -396,9 +432,6 @@ const buildStarsAsync = () => new Promise(resolve => {
   },0);
 });
 
-/* ══════════════════════════════════════════════════════
-   SHADERS
-══════════════════════════════════════════════════════ */
 const VERT=`varying vec2 vUv; void main(){ vUv=uv; gl_Position=vec4(position,1.0); }`;
 
 const HSL_FN=`
@@ -494,9 +527,6 @@ void main(){
     glass+=hsl2rgb(uHue+0.07,0.95,0.72)*pow(clamp(1.0-pertN.z,0.0,1.0),2.2)*(0.08+uSurfaceDistor*0.55);
     glass=mix(glass,vec3(1.0),schlick(pertN.z,0.04)*0.38);
 
-    /* ── Spéculaires haute précision — 3 sources au lieu de 2 ──
-       La 3e source (derrière) donne une contre-lumière réaliste
-       que le verre vrai montre toujours. */
     glass+=pow(max(0.0,dot(pertN,normalize(vec3(-0.5,0.6,1.0)))),110.0);
     glass+=pow(max(0.0,dot(pertN,normalize(vec3(0.4,-0.5,0.8)))),55.0)*0.18;
     glass+=pow(max(0.0,dot(pertN,normalize(vec3(0.1,0.1,-0.8)))),90.0)*0.06;
@@ -508,7 +538,6 @@ void main(){
 }
 `;
 
-/* ── Bloom horizontal ── */
 const BLOOM_H_FRAG=`
 precision highp float;
 uniform sampler2D uScene; uniform vec2 uTexelSize; varying vec2 vUv;
@@ -531,7 +560,6 @@ void main(){
   gl_FragColor=vec4(a*0.028+b*0.067+c*0.124+d*0.179+e*0.204+f*0.179+g*0.124+h*0.067+k*0.028,1.0);
 }`;
 
-/* ── Bloom vertical ── */
 const BLOOM_V_FRAG=`
 precision highp float;
 uniform sampler2D uBloom; uniform vec2 uTexelSize; varying vec2 vUv;
@@ -557,29 +585,14 @@ vec3 aces(vec3 x){return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0)
 void main(){
   vec3 scene=texture2D(uScene,vUv).rgb;
   vec3 bloom=texture2D(uBloom,vUv).rgb;
-  /* ── Bloom strength légèrement augmentée (0.92→1.00) car le bloom est
-     maintenant calculé à 2/3 résolution : plus de détails préservés,
-     on peut se permettre plus d'intensité sans sur-exposition. ── */
   vec3 ldr=pow(aces((scene+bloom*1.00)*0.92),vec3(1.0/2.2));
   vec2 uv2=vUv*(1.0-vUv.yx);
   ldr*=mix(0.82,1.0,pow(uv2.x*uv2.y*15.0,0.18));
   gl_FragColor=vec4(ldr,1.0);
 }`;
 
-/* ══════════════════════════════════════════════════════
-   RENDER TARGETS
-
-   Améliorations :
-   ① sceneRT en MSAA 4× (WebGLMultisampleRenderTarget)
-     quand WebGL2 est disponible (tous les iPhones récents).
-     Élimine le crénelage sur le contour de la sphère et les étoiles.
-   ② Bloom à 2/3 résolution (vs 1/2 avant) → halo plus défini,
-     moins de flou artificiel de sous-résolution.
-══════════════════════════════════════════════════════ */
 const PW=()=>Math.round(W*currentDPR);
 const PH=()=>Math.round(H*currentDPR);
-
-/* Bloom à 2/3 de la résolution d'affichage (avant : 1/2) */
 const bW=()=>Math.round(W*2/3);
 const bH=()=>Math.round(H*2/3);
 
@@ -591,10 +604,6 @@ const rtO={
   stencilBuffer:false
 };
 
-/* ── MSAA 4× sur la scène principale ──
-   WebGLMultisampleRenderTarget est disponible depuis Three.js r118.
-   Sur A15/A16/A17 Pro, MSAA 4× coûte ~10-15% de GPU en plus
-   pour un gain visuel majeur sur les contours sub-pixel. */
 let sceneRT;
 const MSAA_SAMPLES = HAS_WEBGL2 ? 4 : 0;
 if(MSAA_SAMPLES > 0) {
@@ -607,7 +616,6 @@ if(MSAA_SAMPLES > 0) {
 const bRT1=new THREE.WebGLRenderTarget(bW(), bH(), {...rtO});
 const bRT2=new THREE.WebGLRenderTarget(bW(), bH(), {...rtO});
 
-/* Uniformes */
 const scU={
   uGalaxy:{value:makePlaceholder()},uStars:{value:makePlaceholder()},
   uTime:{value:0},uSphereR:{value:0.4},uHue:{value:0.7},
@@ -639,9 +647,6 @@ const nodes=Array.from({length:7},(_,i)=>({
 }));
 const getSR=()=>Math.min(W,H)*0.41/H;
 
-/* ══════════════════════════════════════════════════════
-   RESIZE
-══════════════════════════════════════════════════════ */
 const onResize=()=>{
   W=window.innerWidth; H=window.innerHeight;
   renderer.setPixelRatio(currentDPR); renderer.setSize(W,H);
@@ -654,7 +659,6 @@ const onResize=()=>{
 window.addEventListener('resize',onResize);
 window.addEventListener('orientationchange',()=>setTimeout(onResize,200));
 
-/* ── Pause arrière-plan ── */
 let _paused = false;
 let prevTime = performance.now();
 document.addEventListener('visibilitychange', () => {
@@ -662,24 +666,10 @@ document.addEventListener('visibilitychange', () => {
   else { _paused = false; prevTime = performance.now(); }
 });
 
-/* ══════════════════════════════════════════════════════
-   QUALITÉ ADAPTATIVE THERMIQUE — 4 paliers + DPR scaling
-
-   Logique entièrement réécrite :
-   ─ Palier 0 (≥55fps) : DPR natif, bloom 2/3, MSAA 4×.
-   ─ Palier 1 (≥45fps) : DPR natif, bloom 1/2, MSAA 4×.
-   ─ Palier 2 (≥35fps) : DPR réduit à 2, bloom 1/3, MSAA 4×.
-   ─ Palier 3 (<35fps) : DPR 1.5, bloom 1/4, MSAA maintenu.
-   La descente de palier est irréversible sur une session
-   (évite les oscillations). Délai de 8s entre chaque vérif
-   pour éviter un faux positif au démarrage (textures en cours).
-
-   Le badge UI affiche le palier courant.
-══════════════════════════════════════════════════════ */
 let qualityTier = 0;
 let fpsWindow = [];
 let fpsLastCheck = 0;
-const QUALITY_CHECK_INTERVAL = 8000; /* ms */
+const QUALITY_CHECK_INTERVAL = 8000;
 const qBadge = document.getElementById('quality-badge');
 
 const updateQualityBadge = () => {
@@ -689,7 +679,6 @@ const updateQualityBadge = () => {
   qBadge.textContent = `${dprStr} · ${msaaStr}${tierStr}`;
 };
 updateQualityBadge();
-/* Cache le badge après 6s */
 setTimeout(() => qBadge.classList.add('gone'), 6000);
 
 const applyQualityTier = (tier) => {
@@ -711,13 +700,11 @@ const applyQualityTier = (tier) => {
   bHU.uTexelSize.value.set(1/bwN, 1/bhN);
   bVU.uTexelSize.value.set(1/bwN, 1/bhN);
   updateQualityBadge();
-  /* Montre brièvement le badge quand la qualité change */
   qBadge.classList.remove('gone');
   setTimeout(() => qBadge.classList.add('gone'), 3000);
 };
 
 const checkAdaptiveQuality = (now, dt) => {
-  /* Ne pas vérifier pendant les 12 premières secondes (génération textures) */
   if(now < 12000) return;
   fpsWindow.push(dt);
   if(fpsWindow.length > 120) fpsWindow.shift();
@@ -730,24 +717,9 @@ const checkAdaptiveQuality = (now, dt) => {
   else if(avgFps < 55 && qualityTier < 1) applyQualityTier(1);
 };
 
-/* ══════════════════════════════════════════════════════
-   BLOOM SKIP — logique plus conservative
-
-   Original : skip si scène calme ET frame impaire.
-   Amélioré : skip SEULEMENT si :
-     ① fps moyen > 100 (ProMotion très fluide — marge confortable)
-     ② ET scène vraiment calme (seuils plus stricts)
-     ③ ET frame impaire
-   Résultat : sur 60Hz le bloom est toujours calculé,
-   sur 120Hz il peut être skipé une frame sur deux uniquement
-   si la scène ne bouge vraiment pas.
-══════════════════════════════════════════════════════ */
 let _frameCount = 0;
 let _avgFpsBloom = 60;
 
-/* ══════════════════════════════════════════════════════
-   BOUCLE DE RENDU
-══════════════════════════════════════════════════════ */
 function loop(now){
   requestAnimationFrame(loop);
   if(_paused || _contextLost) return;
@@ -757,7 +729,6 @@ function loop(now){
   prevTime = now;
   _frameCount++;
 
-  /* Estimation fps pour bloom skip */
   _avgFpsBloom = lerp(_avgFpsBloom, 1/Math.max(dt,0.001), 0.05);
 
   checkAdaptiveQuality(now, dt);
@@ -791,9 +762,6 @@ function loop(now){
     scU[`uNH${i}`].value=hue+nd.hOff*0.22;
   });
 
-  /* ── Bloom skip conservatif ──
-     Ne skipper que si le GPU est très à l'aise (>100fps moyen)
-     ET que la scène est vraiment immobile. Sur 60Hz : jamais skipé. */
   const sceneVeryCalm = beatImpact < 0.01 && sub < 0.01 && scU.uSurfaceDistor.value < 0.003;
   const gpuComfortable = _avgFpsBloom > 100;
   const doBloom = !(sceneVeryCalm && gpuComfortable && (_frameCount % 2 === 1));
@@ -806,9 +774,6 @@ function loop(now){
   renderer.setRenderTarget(null); renderer.render(cS, cam);
 }
 
-/* ══════════════════════════════════════════════════════
-   DÉMARRAGE
-══════════════════════════════════════════════════════ */
 requestAnimationFrame(loop);
 buildMilkyWayAsync().then(t => { scU.uGalaxy.value = t; });
 buildStarsAsync().then(t    => { scU.uStars.value  = t; });
