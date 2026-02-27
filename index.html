@@ -8,32 +8,30 @@
 @import url('https://fonts.googleapis.com/css2?family=Didact+Gothic&family=EB+Garamond:ital,wght@0,400;1,300&display=swap');
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{width:100%;height:100%;overflow:hidden;background:#000;cursor:none;
-  -webkit-tap-highlight-color:transparent; user-select:none; -webkit-user-select:none;}
+  -webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none;}
 #c{position:fixed;top:0;left:0;width:100%;height:100%;display:block;
-  image-rendering:auto; /* Let the GPU handle interpolation */
-  touch-action:none;}
-#ui{position:fixed;bottom:max(44px, env(safe-area-inset-bottom, 44px));left:50%;
+  image-rendering:auto;touch-action:none;}
+#ui{position:fixed;bottom:max(44px,env(safe-area-inset-bottom,44px));left:50%;
   transform:translateX(-50%);z-index:10;display:flex;gap:14px;transition:opacity 1s ease}
 #ui.hidden{opacity:0;pointer-events:none}
 .btn{padding:12px 36px;border:1px solid rgba(180,160,220,.18);
   background:rgba(2,1,8,.82);color:rgba(200,180,240,.78);
   font-family:'Didact Gothic',sans-serif;font-size:8.5px;letter-spacing:.32em;
   text-transform:uppercase;cursor:pointer;backdrop-filter:blur(28px);
-  -webkit-backdrop-filter:blur(28px);
-  border-radius:1px;transition:all .4s ease;
+  -webkit-backdrop-filter:blur(28px);border-radius:1px;transition:all .4s ease;
   -webkit-appearance:none;appearance:none;}
 .btn:hover{background:rgba(160,130,210,.09);border-color:rgba(180,155,230,.45);color:#d5c4f5}
 .btn:active{background:rgba(160,130,210,.18);transform:scale(0.97)}
 #fileInput{display:none}
-#track{position:fixed;bottom:max(15px, env(safe-area-inset-bottom, 15px));
-  left:50%;transform:translateX(-50%);
-  color:rgba(180,155,225,.22);font-family:'EB Garamond',serif;font-style:italic;
-  font-size:10.5px;letter-spacing:.2em;z-index:10;display:none;
-  max-width:68vw;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#hint{position:fixed;top:max(32px, env(safe-area-inset-top, 32px));
-  left:50%;transform:translateX(-50%);
-  color:rgba(180,155,225,.14);font-family:'Didact Gothic',sans-serif;
-  font-size:8px;letter-spacing:.42em;text-transform:uppercase;z-index:10;transition:opacity 2.5s}
+#track{position:fixed;bottom:max(15px,env(safe-area-inset-bottom,15px));
+  left:50%;transform:translateX(-50%);color:rgba(180,155,225,.22);
+  font-family:'EB Garamond',serif;font-style:italic;font-size:10.5px;
+  letter-spacing:.2em;z-index:10;display:none;max-width:68vw;text-align:center;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#hint{position:fixed;top:max(32px,env(safe-area-inset-top,32px));left:50%;
+  transform:translateX(-50%);color:rgba(180,155,225,.14);
+  font-family:'Didact Gothic',sans-serif;font-size:8px;letter-spacing:.42em;
+  text-transform:uppercase;z-index:10;transition:opacity 2.5s}
 #hint.gone{opacity:0}
 #toast{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
   color:rgba(200,180,240,.7);font-family:'Didact Gothic',sans-serif;font-size:9px;
@@ -63,20 +61,13 @@ html,body{width:100%;height:100%;overflow:hidden;background:#000;cursor:none;
 <script>
 'use strict';
 
-/* ─────────────────────────────────────────────────────────
-   UTILS
-───────────────────────────────────────────────────────── */
-const lerp = (a,b,t) => a + (b-a)*t;
-const clamp = (v,lo,hi) => Math.max(lo, Math.min(hi,v));
-const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+const lerp  = (a,b,t) => a+(b-a)*t;
+const clamp = (v,lo,hi) => Math.max(lo,Math.min(hi,v));
 
 let W = window.innerWidth, H = window.innerHeight;
-// Full native DPR — iPhone 15 Pro = 3x. No artificial cap.
 const DPR = window.devicePixelRatio || 1;
 
-/* ─────────────────────────────────────────────────────────
-   TOAST
-───────────────────────────────────────────────────────── */
+/* ── Toast ── */
 let toastTimer = null;
 const showToast = (msg, dur=3000) => {
   const el = document.getElementById('toast');
@@ -84,58 +75,38 @@ const showToast = (msg, dur=3000) => {
   clearTimeout(toastTimer);
   if(dur > 0) toastTimer = setTimeout(() => el.classList.remove('show'), dur);
 };
-const hideToast = () => {
-  clearTimeout(toastTimer);
-  document.getElementById('toast').classList.remove('show');
-};
+const hideToast = () => { clearTimeout(toastTimer); document.getElementById('toast').classList.remove('show'); };
 
-/* ─────────────────────────────────────────────────────────
-   AUDIO ENGINE
-───────────────────────────────────────────────────────── */
+/* ── Audio ── */
 let actx, analyser, freqData, live = false;
 let bs=0, sub=0, lastBs=0, beatImpact=0;
-let currentBufSrc  = null;   // BufferSourceNode (audio files)
-let currentMediaEl = null;   // HTMLMediaElement (video files or large audio)
-let currentObjUrl  = null;   // object URL to revoke on next load
+let currentBufSrc=null, currentMediaEl=null, currentObjUrl=null;
 
-const fBand = (lo, hi) => {
-  if(!freqData || !freqData.length) return 0;
-  const a = Math.floor(lo * freqData.length);
-  const b = Math.max(Math.floor(hi * freqData.length), a+1);
-  let s=0; for(let i=a; i<b; i++) s += freqData[i];
-  return s / ((b-a) * 255);
+const fBand = (lo,hi) => {
+  if(!freqData||!freqData.length) return 0;
+  const a=Math.floor(lo*freqData.length), b=Math.max(Math.floor(hi*freqData.length),a+1);
+  let s=0; for(let i=a;i<b;i++) s+=freqData[i]; return s/((b-a)*255);
 };
-
-/* Creates / resets the analyser node */
 const setupAnalyser = () => {
-  if(analyser) try{ analyser.disconnect(); }catch(_){}
-  analyser = actx.createAnalyser();
-  analyser.fftSize = 2048;
-  analyser.smoothingTimeConstant = 0.82;
-  freqData = new Uint8Array(analyser.frequencyBinCount);
+  if(analyser) try{analyser.disconnect();}catch(_){}
+  analyser=actx.createAnalyser(); analyser.fftSize=2048;
+  analyser.smoothingTimeConstant=0.82; freqData=new Uint8Array(analyser.frequencyBinCount);
 };
-
-/* Ensures an AudioContext exists and is running */
 const ensureActx = async () => {
-  if(!actx || actx.state === 'closed')
-    actx = new(window.AudioContext || window.webkitAudioContext)();
-  if(actx.state === 'suspended') await actx.resume();
+  if(!actx||actx.state==='closed') actx=new(window.AudioContext||window.webkitAudioContext)();
+  if(actx.state==='suspended') await actx.resume();
 };
-
-/* Teardown previous playback */
 const stopPrev = () => {
-  if(currentBufSrc)  { try{ currentBufSrc.stop(); }catch(_){} currentBufSrc = null; }
-  if(currentMediaEl) { currentMediaEl.pause(); currentMediaEl.src = ''; currentMediaEl = null; }
-  if(currentObjUrl)  { try{ URL.revokeObjectURL(currentObjUrl); }catch(_){} currentObjUrl = null; }
+  if(currentBufSrc){try{currentBufSrc.stop();}catch(_){}currentBufSrc=null;}
+  if(currentMediaEl){currentMediaEl.pause();currentMediaEl.src='';currentMediaEl=null;}
+  if(currentObjUrl){try{URL.revokeObjectURL(currentObjUrl);}catch(_){}currentObjUrl=null;}
 };
-
 const goLive = () => {
-  live = true;
+  live=true;
   document.getElementById('ui').classList.add('hidden');
   document.getElementById('hint').classList.add('gone');
 };
 
-/* ── Microphone ── */
 document.getElementById('micBtn').onclick = async () => {
   try {
     await ensureActx();
@@ -144,904 +115,507 @@ document.getElementById('micBtn').onclick = async () => {
     actx.createMediaStreamSource(stream).connect(analyser);
     analyser.connect(actx.destination);
     goLive();
-  } catch(err) {
-    showToast('Accès micro refusé<br>' + err.message, 4000);
-  }
+  } catch(err) { showToast('Accès micro refusé<br>'+err.message,4000); }
 };
 
 document.getElementById('fileBtn').onclick = () => document.getElementById('fileInput').click();
 
-/* ── File loading — fully separated paths for video vs audio ──
-   iOS CRITICAL RULE: .play() must be called SYNCHRONOUSLY within
-   the user-gesture event stack. Any await before play() on iOS Safari
-   exits the gesture context → play() fails silently, no audio.
-   Strategy:
-     VIDEO  → build element + call play() FIRST (sync), then setup AudioContext
-     AUDIO  → decodeAudioData (works great for MP3/AAC, loops perfectly)
-              fallback → MediaElement (large files or unsupported codecs)
-─────────────────────────────────────────────────────────────────── */
 document.getElementById('fileInput').onchange = async e => {
-  const f = e.target.files[0]; if(!f) return;
-
+  const f=e.target.files[0]; if(!f) return;
   stopPrev();
+  const trackEl=document.getElementById('track');
+  trackEl.textContent=f.name.replace(/\.[^.]+$/,''); trackEl.style.display='block';
+  const isVideo=f.type.startsWith('video/')||/\.(mp4|mov|m4v|webm|mkv|avi)$/i.test(f.name);
+  const objUrl=URL.createObjectURL(f); currentObjUrl=objUrl;
 
-  /* Show track name */
-  const trackEl = document.getElementById('track');
-  trackEl.textContent = f.name.replace(/\.[^.]+$/, '');
-  trackEl.style.display = 'block';
-
-  const isVideo = f.type.startsWith('video/') ||
-                  /\.(mp4|mov|m4v|webm|mkv|avi)$/i.test(f.name);
-
-  /* Create the object URL once */
-  const objUrl = URL.createObjectURL(f);
-  currentObjUrl = objUrl;
-
-  /* ════════════════════════════════════════
-     PATH A — VIDEO FILE
-     play() called SYNCHRONOUSLY right now,
-     before any await, to stay in iOS gesture.
-  ════════════════════════════════════════ */
-  if(isVideo) {
-    const vid = document.createElement('video');
-    vid.setAttribute('playsinline', '');          /* required by iOS */
-    vid.setAttribute('webkit-playsinline', '');   /* older iOS */
-    vid.playsInline = true;
-    vid.loop   = true;
-    vid.volume = 1.0;
-    vid.src    = objUrl;
-
-    /* ⚡ SYNCHRONOUS play() — still in gesture context */
-    const playPromise = vid.play();
-    currentMediaEl = vid;
-
-    /* Now we can await async things */
-    try { await ensureActx(); } catch(_){}
-
-    /* Wait for playback to actually start */
-    try {
-      await playPromise;
-    } catch(playErr) {
-      showToast('Lecture impossible<br>' + playErr.message, 5000);
-      return;
-    }
-
-    /* Connect to Web Audio for analysis */
+  if(isVideo){
+    const vid=document.createElement('video');
+    vid.setAttribute('playsinline',''); vid.setAttribute('webkit-playsinline','');
+    vid.playsInline=true; vid.loop=true; vid.volume=1.0; vid.src=objUrl;
+    const pp=vid.play(); currentMediaEl=vid;
+    try{await ensureActx();}catch(_){}
+    try{await pp;}catch(err){showToast('Lecture impossible<br>'+err.message,5000);return;}
     setupAnalyser();
-    try {
-      actx.createMediaElementSource(vid).connect(analyser);
-      analyser.connect(actx.destination);
-    } catch(audioErr) {
-      /* createMediaElementSource can fail if element was already used
-         by another context — show a warning but still animate */
-      console.warn('Web Audio connect failed:', audioErr);
-      showToast('Visualisation indisponible<br>audio actif en sortie directe', 4000);
-    }
-    goLive();
-    return;
+    try{actx.createMediaElementSource(vid).connect(analyser);analyser.connect(actx.destination);}
+    catch(err){console.warn('Web Audio connect:',err);}
+    goLive(); return;
   }
 
-  /* ════════════════════════════════════════
-     PATH B — AUDIO FILE (MP3, AAC, M4A…)
-     decodeAudioData: decoded once into RAM,
-     seamless loop, best quality.
-  ════════════════════════════════════════ */
   await ensureActx();
-
-  /* Large files (> 80 MB decoded PCM would be too heavy) → MediaElement */
-  const sizeMB = f.size / 1024 / 1024;
-  if(sizeMB > 80) {
-    showToast('Gros fichier — lecture directe', 2000);
-    const audio = new Audio();
-    audio.loop  = true;
-    /* play() FIRST before any more awaits */
-    const pp = audio.play.bind(audio);
-    audio.src  = objUrl;
-    const pprom = pp();
-    setupAnalyser();
-    try { await pprom; } catch(_){}
-    try {
-      actx.createMediaElementSource(audio).connect(analyser);
-      analyser.connect(actx.destination);
-      currentMediaEl = audio;
-      goLive();
-    } catch(err) {
-      showToast('Lecture impossible<br>' + err.message, 5000);
-    }
+  if(f.size/1024/1024>80){
+    showToast('Gros fichier — lecture directe',2000);
+    const audio=new Audio(); audio.loop=true; audio.src=objUrl;
+    const pp=audio.play(); setupAnalyser();
+    try{await pp;}catch(_){}
+    try{actx.createMediaElementSource(audio).connect(analyser);analyser.connect(actx.destination);currentMediaEl=audio;goLive();}
+    catch(err){showToast('Lecture impossible<br>'+err.message,5000);}
     return;
   }
 
-  /* Normal audio file — decode to buffer */
-  const prog    = document.getElementById('progress');
-  const progBar = document.getElementById('progress-bar');
-  prog.style.display = 'block'; progBar.style.width = '0%';
-  showToast('Chargement…', -1);
-
+  const prog=document.getElementById('progress'),progBar=document.getElementById('progress-bar');
+  prog.style.display='block'; progBar.style.width='0%'; showToast('Chargement…',-1);
   try {
-    /* Read file */
-    const arrayBuf = await new Promise((res, rej) => {
-      const reader = new FileReader();
-      reader.onprogress = ev => {
-        if(ev.lengthComputable)
-          progBar.style.width = (ev.loaded / ev.total * 80) + '%';
-      };
-      reader.onload  = ev => { progBar.style.width = '90%'; res(ev.target.result); };
-      reader.onerror = () => rej(new Error('Lecture échouée'));
-      reader.readAsArrayBuffer(f);
+    const arrayBuf=await new Promise((res,rej)=>{
+      const r=new FileReader();
+      r.onprogress=ev=>{if(ev.lengthComputable)progBar.style.width=(ev.loaded/ev.total*80)+'%';};
+      r.onload=ev=>{progBar.style.width='90%';res(ev.target.result);};
+      r.onerror=()=>rej(new Error('Lecture échouée')); r.readAsArrayBuffer(f);
     });
-
-    showToast('Décodage…', -1);
-
-    /* decodeAudioData — wrap callback API for iOS compat
-       (some iOS versions reject the promise form) */
-    const audioBuf = await new Promise((res, rej) =>
-      actx.decodeAudioData(arrayBuf, res, rej)
-    );
-
-    progBar.style.width = '100%';
-    prog.style.display  = 'none';
-    hideToast();
-
-    setupAnalyser();
-    analyser.connect(actx.destination);
-    currentBufSrc        = actx.createBufferSource();
-    currentBufSrc.buffer = audioBuf;
-    currentBufSrc.loop   = true;
-    currentBufSrc.connect(analyser);
-    currentBufSrc.start(0);
-    goLive();
-
+    showToast('Décodage…',-1);
+    const audioBuf=await new Promise((res,rej)=>actx.decodeAudioData(arrayBuf,res,rej));
+    progBar.style.width='100%'; prog.style.display='none'; hideToast();
+    setupAnalyser(); analyser.connect(actx.destination);
+    currentBufSrc=actx.createBufferSource();
+    currentBufSrc.buffer=audioBuf; currentBufSrc.loop=true;
+    currentBufSrc.connect(analyser); currentBufSrc.start(0); goLive();
   } catch(err) {
-    prog.style.display = 'none'; hideToast();
-    console.warn('decodeAudioData failed, MediaElement fallback:', err);
-    showToast('Basculement mode direct…', 1500);
-
-    /* Fallback: MediaElement (still valid here for audio, gesture still warm) */
-    try {
-      const audio = new Audio();
-      audio.loop = true;
-      audio.src  = objUrl;
-      const pp   = audio.play();
-      setupAnalyser();
-      try { await pp; } catch(_){}
+    prog.style.display='none'; hideToast();
+    try{
+      const audio=new Audio(); audio.loop=true; audio.src=objUrl;
+      const pp=audio.play(); setupAnalyser();
+      try{await pp;}catch(_){}
       actx.createMediaElementSource(audio).connect(analyser);
-      analyser.connect(actx.destination);
-      currentMediaEl = audio;
-      goLive();
-    } catch(err2) {
-      showToast('Lecture impossible<br>' + err2.message, 6000);
-    }
+      analyser.connect(actx.destination); currentMediaEl=audio; goLive();
+    }catch(err2){showToast('Lecture impossible<br>'+err2.message,6000);}
   }
 };
 
-// Toggle UI: double-tap on mobile, Escape on desktop
-let lastTap = 0;
-document.addEventListener('touchend', e => {
-  const now = Date.now();
-  if(now - lastTap < 300) {
-    document.getElementById('ui').classList.toggle('hidden');
-    e.preventDefault();
-  }
-  lastTap = now;
-}, {passive:false});
-document.addEventListener('keydown', e => {
-  if(e.key === 'Escape') document.getElementById('ui').classList.toggle('hidden');
-});
+let lastTap=0;
+document.addEventListener('touchend',e=>{
+  const now=Date.now();
+  if(now-lastTap<300){document.getElementById('ui').classList.toggle('hidden');e.preventDefault();}
+  lastTap=now;
+},{passive:false});
+document.addEventListener('keydown',e=>{if(e.key==='Escape')document.getElementById('ui').classList.toggle('hidden');});
 
-/* ─────────────────────────────────────────────────────────
-   TEXTURE GENERATION
-───────────────────────────────────────────────────────── */
-const hash2 = (ix,iy,seed) => {
-  let h = (ix*1619 + iy*31337 + seed*6271) | 0;
-  h = Math.imul(h^(h>>>16), 0x45d9f3b);
-  h = Math.imul(h^(h>>>16), 0x45d9f3b);
-  h ^= h>>>16; return (h>>>0) / 0xffffffff;
+/* ══════════════════════════════════════════════════════
+   NOISE HELPERS
+══════════════════════════════════════════════════════ */
+const hash2=(ix,iy,seed)=>{
+  let h=(ix*1619+iy*31337+seed*6271)|0;
+  h=Math.imul(h^(h>>>16),0x45d9f3b); h=Math.imul(h^(h>>>16),0x45d9f3b);
+  h^=h>>>16; return (h>>>0)/0xffffffff;
 };
-const vnoise = (x,y,seed) => {
-  const ix=Math.floor(x), iy=Math.floor(y), fx=x-ix, fy=y-iy;
-  const ux=fx*fx*fx*(fx*(fx*6-15)+10), uy=fy*fy*fy*(fy*(fy*6-15)+10);
+const vnoise=(x,y,seed)=>{
+  const ix=Math.floor(x),iy=Math.floor(y),fx=x-ix,fy=y-iy;
+  const ux=fx*fx*fx*(fx*(fx*6-15)+10),uy=fy*fy*fy*(fy*(fy*6-15)+10);
   return lerp(lerp(hash2(ix,iy,seed),hash2(ix+1,iy,seed),ux),
               lerp(hash2(ix,iy+1,seed),hash2(ix+1,iy+1,seed),ux),uy);
 };
-const fbm = (x,y,oct,seed) => {
-  let v=0, amp=0.5, fr=1, mx=0;
+const fbm=(x,y,oct,seed)=>{
+  let v=0,amp=0.5,fr=1,mx=0;
   for(let i=0;i<oct;i++){v+=vnoise(x*fr,y*fr,seed+i*7)*amp;mx+=amp;amp*=0.48;fr*=2.05;}
   return v/mx;
 };
 
-/* ─────────────────────────────────────────────────────────
-   GALAXY TEXTURE — astrophysically coloured Milky Way
-   Layers (back to front):
-     1. Deep black space (hard transparent cutoff)
-     2. Spiral arm glow — cool blue-white (young OB stars)
-     3. Dust lanes — warm absorbing brown/dark, cuts arm brightness
-     4. Inter-arm diffuse haze — faint violet-grey
-     5. Bulge/core — amber-gold ellipsoid (old red-giant population)
-     6. HII nebula blobs — magenta/rose emission regions in arms
-     7. Core super-centre — blue-white intense peak
-───────────────────────────────────────────────────────── */
-const buildGalaxy = () => {
+/* ══════════════════════════════════════════════════════
+   MILKY WAY — naked-eye, Atacama-quality dark sky
+
+   Appearance to the human eye from a pristine dark site:
+   · A wide, soft LUMINOUS BAND — not a sharp object, just
+     collective unresolved starlight forming a hazy river
+   · Galactic centre (Sagittarius): brightest patch, slightly
+     warm cream/amber — dense bulge of old stars
+   · Arms thin and fade to pure black on both sides
+   · The Great Rift: a dark DUST LANE that visually splits
+     the bright part of the band near the centre
+     (caused by nearby dust clouds absorbing background stars)
+   · Overall colour: very cool blue-white on the arms,
+     warm cream at the centre — everything very desaturated,
+     as seen by human eyes (not a long-exposure photo)
+   · Fond = absolute black — no grey background
+══════════════════════════════════════════════════════ */
+const buildMilkyWay = () => {
   const GW=1024, GH=512;
   const cv=document.createElement('canvas'); cv.width=GW; cv.height=GH;
   const cx=cv.getContext('2d');
   const id=cx.createImageData(GW,GH), px=id.data;
 
-  /* Galaxy tilt angle */
-  const bA=-0.48, cosA=Math.cos(bA), sinA=Math.sin(bA);
-
-  /* Seeded random for deterministic nebulae positions */
-  let rngState=12345;
-  const rng=()=>{ rngState=Math.imul(rngState^(rngState>>>15),0x2c1b3c6d); rngState=Math.imul(rngState^(rngState>>>12),0x297a2d39); rngState^=rngState>>>15; return (rngState>>>0)/0xffffffff; };
-
-  /* Pre-bake 18 HII nebula blobs along the spiral arms */
-  const nebulae=[];
-  for(let k=0;k<18;k++){
-    const arm   = k%2;                          /* two arms */
-    const t     = rng()*1.4+0.15;               /* position along arm  */
-    const theta = t*2.8 + arm*Math.PI + rng()*0.6;
-    const r     = t*0.32+0.08 + rng()*0.05;     /* radial distance    */
-    nebulae.push({
-      al:  r * Math.cos(theta),                 /* along-arm coord    */
-      pe:  r * Math.sin(theta) * 0.06 + (rng()-0.5)*0.012,/* perp offset */
-      str: 0.3+rng()*0.5,
-      hue: rng() < 0.7 ? 0.92+rng()*0.08 : 0.55+rng()*0.08, /* rose vs teal */
-      sz:  0.018+rng()*0.022
-    });
-  }
+  /* Tilt of band across the sky */
+  const tilt=-0.42, cosT=Math.cos(tilt), sinT=Math.sin(tilt);
 
   for(let py=0;py<GH;py++) for(let qx=0;qx<GW;qx++){
     const idx=(py*GW+qx)*4;
-    const nx=(qx/GW-0.5)*2;
-    const ny=(py/GH-0.5)*2*(GH/GW);
-    /* Rotate into galaxy frame */
-    const al= nx*cosA+ny*sinA;
-    const pe=-nx*sinA+ny*cosA;
+    const nx=(qx/GW-0.5)*2.0;
+    const ny=(py/GH-0.5)*2.0*(GH/GW);
 
-    /* Radial distances */
-    const coreDist = Math.sqrt(nx*nx*0.75+ny*ny*1.5);
-    const diskDist = Math.sqrt(al*al+pe*pe*0.3);
+    /* Rotate into band frame */
+    const bx= nx*cosT+ny*sinT;   /* along band  */
+    const by=-nx*sinT+ny*cosT;   /* across band */
 
-    /* ── 1. Spiral arm profile ──
-       Two-arm log spiral:  pe ≈ 0  at  al·sin(log(r)·k) = 0
-       We use a gaussian band around pe=0 whose width varies with noise */
-    const armNoise = fbm(al*2.1+0.4, 0.5, 6, 11);
-    const armWidth = 0.14 + armNoise*0.16;
-    /* Both arms (offset π in al-space is equivalent to second arm) */
-    const arm1 = Math.exp(-(pe*pe)/(2*armWidth*armWidth));
-    const arm2 = Math.exp(-((pe-0.0)*(pe-0.0))/(2*armWidth*armWidth)); /* same plane, different radial pos */
-    /* Taper arm brightness with distance from center */
-    const armFalloff = Math.exp(-diskDist*diskDist*2.2);
-    const armDensity = arm1 * armFalloff
-                     * (0.28 + fbm(al*1.5+0.3, pe*3.0, 5, 77)*0.72);
+    /* ── Band envelope (across) ── */
+    /* Width varies with noise — real MW isn't uniform */
+    const widthNoise = fbm(bx*1.1+3.0, 0, 3, 17)*0.08;
+    const bw = 0.16 + widthNoise;
+    const bandEnv = Math.exp(-(by*by)/(2*bw*bw));
+    if(bandEnv<0.003){px[idx+3]=0;continue;}
 
-    /* ── 2. Bulge — oblate ellipsoid, amber-gold ── */
-    const bulgeDist = Math.sqrt(nx*nx*1.1+ny*ny*2.0);
-    const bulge     = Math.exp(-bulgeDist*bulgeDist*10.5)*0.9
-                    + Math.exp(-bulgeDist*bulgeDist*38.0)*0.4;  /* tight peak + soft halo */
+    /* ── Along-band profile ──
+       Galactic centre at bx≈−0.10
+       Core side (negative bx) is brighter; anti-centre (positive) fades faster */
+    const cx_ = -0.10;
+    const dx  = bx - cx_;
+    const coreEnv = Math.exp(-dx*dx*(dx>0 ? 2.8 : 1.5));
 
-    /* ── 3. Dust lanes — dark filaments cutting across arms ── */
-    const dust1 = fbm(al*3.4+1.7, pe*5.2, 4, 42);
-    const dust2 = fbm(al*4.1-0.8, pe*3.8+0.5, 3, 91);
-    /* Dust is strongest inside the arm */
-    const dustMask = armDensity * Math.max(0, (dust1-0.45)*2.0) * 0.7
-                   + armDensity * Math.max(0, (dust2-0.52)*1.8) * 0.4;
+    /* ── Unresolved star clouds (lumpy detail within band) ── */
+    const clouds = fbm(bx*2.8+0.4, by*7.0, 6, 11)*0.65
+                 + fbm(bx*5.5-0.9, by*11.0, 4, 53)*0.35;
+    const cloudBright = 0.38 + clouds*0.62;
 
-    /* ── 4. Diffuse inter-arm haze ── */
-    const haze = fbm(al*0.9+2.0, pe*1.1, 3, 33)
-               * Math.exp(-diskDist*diskDist*3.5) * 0.12;
+    /* ── Great Rift (dark dust lane near centre) ──
+       Only visible in the bright inner region.
+       It wanders slightly along the band and forks. */
+    const riftZone = clamp((0.6-Math.abs(dx))*2.5,0,1); /* fades out toward ends */
 
-    /* ── 5. Total stellar density ── */
-    const stellarDens = Math.max(0, armDensity - dustMask) + bulge*0.55 + haze;
-    if(stellarDens < 0.004){ px[idx+3]=0; continue; }
+    /* Primary rift — offset slightly above band centre */
+    const r1ctr = 0.015+fbm(bx*1.8,0,2,99)*0.016;
+    const r1w   = 0.026+fbm(bx*3.2+1.5,0,2,44)*0.015;
+    const r1    = Math.exp(-(by-r1ctr)*(by-r1ctr)/(2*r1w*r1w))*riftZone;
 
-    /* ── 6. Colour mixing ──
-       Core: warm amber  rgb(255, 210, 120)
-       Arms: cool blue   rgb(160, 190, 255)
-       Haze: violet-grey rgb(140, 145, 200)
-       Dust: dark brown  (subtracted)                       */
-    const coreWeight  = clamp(bulge*1.8, 0, 1);
-    const armWeight   = clamp(armDensity*2.5, 0, 1) * (1-coreWeight*0.6);
+    /* Secondary rift (the fork toward Ophiuchus) */
+    const r2ctr = -0.018+fbm(bx*2.0+0.7,0,2,72)*0.012;
+    const r2w   = r1w*0.55;
+    const r2    = Math.exp(-(by-r2ctr)*(by-r2ctr)/(2*r2w*r2w))*riftZone*0.6;
 
-    /* Arm brightness modulation — slightly dimmer between sub-arms */
-    const subArmMod = 0.75 + fbm(al*4.0, pe*2.0, 3, 55)*0.25;
+    const rift  = clamp(r1+r2, 0, 0.88);
 
-    let r = lerp(lerp(0.55, 0.63, armWeight), 1.00, coreWeight);   /* amber peak at core */
-    let g = lerp(lerp(0.75, 0.82, armWeight), 0.82, coreWeight);
-    let b = lerp(lerp(1.00, 0.62, armWeight), 0.47, coreWeight);   /* blue arms → amber core */
+    /* ── Final brightness ── */
+    const bright = bandEnv * cloudBright * (1.0-rift*0.82) * coreEnv;
+    if(bright<0.003){px[idx+3]=0;continue;}
 
-    /* Dust darkens & reddens */
-    const dustRed   = dustMask * 1.8;
-    r -= dustRed * 0.15;
-    g -= dustRed * 0.28;
-    b -= dustRed * 0.38;
+    /* ── Colour ──
+       Very desaturated — this is what eyes see, not a camera.
+       Core: warm cream  rgb(1.00, 0.94, 0.80)
+       Arms: cool white  rgb(0.80, 0.87, 1.00)
+       Everything barely tinted — the Milky Way looks nearly white */
+    const cw = clamp(coreEnv*1.6-0.4, 0, 1) * clamp(1-Math.abs(by)*9, 0, 1);
+    const r  = lerp(0.80, 1.00, cw);
+    const g  = lerp(0.87, 0.94, cw);
+    const b  = lerp(1.00, 0.80, cw);
 
-    /* ── 7. HII nebulae blobs ── */
-    let nebR=0, nebG=0, nebB=0;
-    for(let k=0;k<nebulae.length;k++){
-      const nb=nebulae[k];
-      const dal=al-nb.al, dpe=pe-nb.pe;
-      const nd2=dal*dal+dpe*dpe;
-      if(nd2 > nb.sz*nb.sz*16) continue; /* skip distant (perf) */
-      const nebStr = Math.exp(-nd2/(nb.sz*nb.sz)) * nb.str * armDensity * 2.5;
-      if(nb.hue > 0.85){ /* rose/magenta HII */
-        nebR += nebStr * 0.95; nebG += nebStr * 0.15; nebB += nebStr * 0.45;
-      } else {           /* teal/cyan OIII   */
-        nebR += nebStr * 0.05; nebG += nebStr * 0.75; nebB += nebStr * 0.85;
-      }
-    }
-    r += nebR; g += nebG; b += nebB;
+    const finalB = Math.pow(clamp(bright,0,1), 0.78) * 0.78;
+    const alpha  = clamp(bright*3.2, 0, 1);
 
-    /* ── 8. Core super-centre bright spike ── */
-    const superCore = Math.exp(-coreDist*coreDist*120) * 1.2;
-    r += superCore*0.9; g += superCore*0.95; b += superCore;
-
-    /* Apply density (contrast boost with gamma) */
-    const dens = Math.pow(clamp(stellarDens*1.25, 0, 1), 0.85);
-    r *= dens; g *= dens; b *= dens;
-
-    /* Gentle bloom into pure black — sharp edge at disk limit */
-    const alpha = clamp(stellarDens*3.5, 0, 1);
-
-    px[idx]  = Math.min(255, r*255);
-    px[idx+1]= Math.min(255, g*255);
-    px[idx+2]= Math.min(255, b*255);
-    px[idx+3]= Math.min(255, alpha*255);
+    px[idx]  =Math.min(255,r*finalB*255);
+    px[idx+1]=Math.min(255,g*finalB*255);
+    px[idx+2]=Math.min(255,b*finalB*255);
+    px[idx+3]=Math.min(255,alpha*255);
   }
 
   cx.putImageData(id,0,0);
   const t=new THREE.CanvasTexture(cv);
-  t.minFilter=THREE.LinearMipmapLinearFilter;
-  t.generateMipmaps=true;
+  t.minFilter=THREE.LinearMipmapLinearFilter; t.generateMipmaps=true;
   return t;
 };
 
-/* ─────────────────────────────────────────────────────────
-   STAR FIELD — three populations like a real sky
-   1. Background dust (thousands of tiny dim stars)
-   2. Mid-magnitude stars with spectral tint (B/A/F/G/K/M types)
-   3. Bright foreground stars with diffraction spikes + glow
-───────────────────────────────────────────────────────── */
+/* ══════════════════════════════════════════════════════
+   STAR FIELD — naked-eye point stars only
+   Three populations by brightness, no diffraction spikes,
+   tiny atmospheric glow only on the brightest few.
+══════════════════════════════════════════════════════ */
 const buildStars = () => {
   const S=1024;
   const cv=document.createElement('canvas'); cv.width=S; cv.height=S;
   const cx=cv.getContext('2d');
 
-  /* Spectral colours: O/B blue → G yellow → M red */
-  const spectral=[
-    [180,210,255], /* O/B — hot blue-white  */
-    [210,228,255], /* A   — white-blue      */
-    [255,248,210], /* F   — warm white      */
-    [255,236,170], /* G   — yellow (Sun)    */
-    [255,200,110], /* K   — orange          */
-    [255,160, 70], /* M   — cool red        */
-  ];
+  /* Spectral tints (naked-eye, very subtle) */
+  const tints=[[195,210,255],[222,232,255],[255,248,230],[255,238,190],[255,210,150]];
 
-  /* 1. Dust — tiny, barely visible */
-  for(let i=0;i<3200;i++){
+  /* Faint background — the 2000+ barely-visible stars */
+  for(let i=0;i<4000;i++){
     const x=Math.random()*S, y=Math.random()*S;
-    cx.fillStyle=`rgba(200,210,255,${0.05+Math.random()*0.18})`;
-    cx.beginPath(); cx.arc(x,y,Math.random()*0.55,0,Math.PI*2); cx.fill();
+    cx.fillStyle=`rgba(200,215,255,${0.04+Math.random()*0.15})`;
+    cx.beginPath(); cx.arc(x,y,Math.random()*0.38,0,Math.PI*2); cx.fill();
   }
 
-  /* 2. Mid-magnitude — coloured, 1px */
-  for(let i=0;i<600;i++){
+  /* Mid-magnitude — individually resolved points, slightly coloured */
+  for(let i=0;i<700;i++){
     const x=Math.random()*S, y=Math.random()*S;
-    const sp=spectral[Math.floor(Math.pow(Math.random(),1.8)*spectral.length)];
-    const a=0.15+Math.random()*0.45;
-    cx.fillStyle=`rgba(${sp[0]},${sp[1]},${sp[2]},${a})`;
-    cx.beginPath(); cx.arc(x,y,0.6+Math.random()*0.7,0,Math.PI*2); cx.fill();
+    const t=tints[Math.floor(Math.pow(Math.random(),1.6)*tints.length)];
+    cx.fillStyle=`rgba(${t[0]},${t[1]},${t[2]},${0.12+Math.random()*0.36})`;
+    cx.beginPath(); cx.arc(x,y,0.32+Math.random()*0.52,0,Math.PI*2); cx.fill();
   }
 
-  /* 3. Bright foreground stars with diffraction cross + soft halo */
-  for(let i=0;i<55;i++){
+  /* Bright stars (mag 0–3) — small soft atmospheric glow, NO spikes */
+  for(let i=0;i<50;i++){
     const x=Math.random()*S, y=Math.random()*S;
-    const sp=spectral[Math.floor(Math.random()*4)]; /* mostly hot types */
+    const t=tints[Math.floor(Math.random()*3)];
     const bright=0.55+Math.random()*0.45;
-    const size=0.8+Math.random()*2.2;
+    const sz=0.65+Math.random()*0.9;
 
-    /* Outer soft glow */
-    const g=cx.createRadialGradient(x,y,0,x,y,size*7);
-    g.addColorStop(0,   `rgba(${sp[0]},${sp[1]},${sp[2]},${bright*0.55})`);
-    g.addColorStop(0.25,`rgba(${sp[0]},${sp[1]},${sp[2]},${bright*0.15})`);
+    /* Soft atmospheric halo — very small radius, just a gentle bloom */
+    const g=cx.createRadialGradient(x,y,0,x,y,sz*4.0);
+    g.addColorStop(0,   `rgba(${t[0]},${t[1]},${t[2]},${bright*0.38})`);
+    g.addColorStop(0.4, `rgba(${t[0]},${t[1]},${t[2]},${bright*0.07})`);
     g.addColorStop(1,   'rgba(0,0,0,0)');
-    cx.fillStyle=g; cx.fillRect(x-size*7,y-size*7,size*14,size*14);
+    cx.fillStyle=g; cx.fillRect(x-sz*4,y-sz*4,sz*8,sz*8);
 
-    /* Diffraction spike (horizontal) */
-    const spikeLen=size*12;
-    const sg=cx.createLinearGradient(x-spikeLen,y,x+spikeLen,y);
-    sg.addColorStop(0,  'rgba(255,255,255,0)');
-    sg.addColorStop(0.4,`rgba(255,255,255,${bright*0.2})`);
-    sg.addColorStop(0.5,`rgba(255,255,255,${bright*0.55})`);
-    sg.addColorStop(0.6,`rgba(255,255,255,${bright*0.2})`);
-    sg.addColorStop(1,  'rgba(255,255,255,0)');
-    cx.save(); cx.translate(x,y);
-    cx.fillStyle=sg;
-    cx.fillRect(-spikeLen,-0.5,spikeLen*2,1);
-    /* Vertical spike (slightly weaker) */
-    cx.rotate(Math.PI/2);
-    const sg2=cx.createLinearGradient(-spikeLen,0,spikeLen,0);
-    sg2.addColorStop(0,  'rgba(255,255,255,0)');
-    sg2.addColorStop(0.45,`rgba(255,255,255,${bright*0.12})`);
-    sg2.addColorStop(0.5, `rgba(255,255,255,${bright*0.35})`);
-    sg2.addColorStop(0.55,`rgba(255,255,255,${bright*0.12})`);
-    sg2.addColorStop(1,  'rgba(255,255,255,0)');
-    cx.fillStyle=sg2;
-    cx.fillRect(-spikeLen,-0.5,spikeLen*2,1);
-    cx.restore();
-
-    /* Star core */
+    /* Crisp point core */
     cx.fillStyle=`rgba(255,255,255,${bright})`;
-    cx.beginPath(); cx.arc(x,y,size*0.45,0,Math.PI*2); cx.fill();
+    cx.beginPath(); cx.arc(x,y,sz*0.35,0,Math.PI*2); cx.fill();
   }
 
   const t=new THREE.CanvasTexture(cv);
-  t.minFilter=THREE.LinearMipmapLinearFilter;
-  t.generateMipmaps=true;
+  t.minFilter=THREE.LinearMipmapLinearFilter; t.generateMipmaps=true;
   return t;
 };
 
-/* ─────────────────────────────────────────────────────────
+/* ══════════════════════════════════════════════════════
    SHADERS
-───────────────────────────────────────────────────────── */
-const VERT = `varying vec2 vUv; void main(){ vUv=uv; gl_Position=vec4(position,1.0); }`;
+══════════════════════════════════════════════════════ */
+const VERT=`varying vec2 vUv; void main(){ vUv=uv; gl_Position=vec4(position,1.0); }`;
 
-const HSL_FN = `
-vec3 hsl2rgb(float h, float s, float l){
-  h=mod(h,1.0);
-  float q=l<0.5?l*(1.0+s):l+s-l*s, p=2.0*l-q;
-  float tR=mod(h+1.0/3.0,1.0), tG=mod(h,1.0), tB=mod(h-1.0/3.0+1.0,1.0);
+const HSL_FN=`
+vec3 hsl2rgb(float h,float s,float l){
+  h=mod(h,1.0); float q=l<0.5?l*(1.0+s):l+s-l*s,p=2.0*l-q;
+  float tR=mod(h+1.0/3.0,1.0),tG=mod(h,1.0),tB=mod(h-1.0/3.0+1.0,1.0);
   float r=tR<1./6.?p+(q-p)*6.*tR:tR<.5?q:tR<2./3.?p+(q-p)*(2./3.-tR)*6.:p;
   float g=tG<1./6.?p+(q-p)*6.*tG:tG<.5?q:tG<2./3.?p+(q-p)*(2./3.-tG)*6.:p;
   float b=tB<1./6.?p+(q-p)*6.*tB:tB<.5?q:tB<2./3.?p+(q-p)*(2./3.-tB)*6.:p;
   return vec3(r,g,b);
 }`;
 
-/* ── Scene Shader ── */
-const SCENE_FRAG = `
+const SCENE_FRAG=`
 precision highp float;
 ${HSL_FN}
-
-uniform sampler2D uGalaxy, uStars;
-uniform float uTime, uSphereR, uHue, uCoreI, uSurfaceDistor, uBeat;
-uniform vec2  uResolution;
-uniform vec3  uN0,uN1,uN2,uN3,uN4,uN5,uN6;
+uniform sampler2D uGalaxy,uStars;
+uniform float uTime,uSphereR,uHue,uCoreI,uSurfaceDistor,uBeat;
+uniform vec2 uResolution;
+uniform vec3 uN0,uN1,uN2,uN3,uN4,uN5,uN6;
 uniform float uNH0,uNH1,uNH2,uNH3,uNH4,uNH5,uNH6;
 varying vec2 vUv;
 
-float schlick(float cosA, float F0){
-  return F0 + (1.0-F0) * pow(clamp(1.0-cosA, 0.0, 1.0), 5.0);
-}
-float nodeG(vec2 p, vec2 c, float r){ float d=length(p-c); return exp(-d*d/(r*r)); }
+float schlick(float c,float F0){return F0+(1.0-F0)*pow(clamp(1.0-c,0.0,1.0),5.0);}
+float nodeG(vec2 p,vec2 c,float r){float d=length(p-c);return exp(-d*d/(r*r));}
 
-/* ── Full refraction path for one wavelength (Cauchy dispersion)
-   Returns the background UV seen through the sphere for IOR n.
-   P0   : ray entry point on sphere surface
-   hitN : outward surface normal at entry
-   surf : 2D surface perturbation (ripples from beats) */
-vec2 refractUV(vec3 P0, vec3 hitN, float n, float asp, vec2 surf){
-  vec3 inc    = vec3(0.0, 0.0, -1.0);
-  vec3 rDir   = refract(inc, hitN, 1.0/n);
-  /* Chord through sphere: P·rDir = -sqrt(sR²-|P×rDir|²), use parametric */
-  float tExit = -2.0 * dot(P0, rDir);          /* sphere chord length  */
-  vec3  Pexit = P0 + rDir * tExit;
-  vec3  exitN = -normalize(Pexit);              /* inward normal at back */
-  vec3  eRay  = refract(rDir, exitN, n);        /* refract back to air   */
-  vec2  uv    = (Pexit.xy + eRay.xy * 2.0 + surf) / vec2(asp,1.0) * 0.5 + 0.5;
-  return clamp(uv, 0.001, 0.999);
+vec2 refractUV(vec3 P0,vec3 hitN,float n,float asp,vec2 surf){
+  vec3 rDir=refract(vec3(0.0,0.0,-1.0),hitN,1.0/n);
+  float tEx=-2.0*dot(P0,rDir);
+  vec3 Pex=P0+rDir*tEx;
+  vec3 eRay=refract(rDir,-normalize(Pex),n);
+  return clamp((Pex.xy+eRay.xy*2.0+surf)/vec2(asp,1.0)*0.5+0.5,0.001,0.999);
 }
 
 void main(){
-  float asp = uResolution.x / uResolution.y;
-  vec2  p   = (vUv - 0.5) * vec2(asp, 1.0) * 2.0;
-  float sR  = uSphereR;
-  float sR2 = sR * sR;
-  float d2  = dot(p, p);
+  float asp=uResolution.x/uResolution.y;
+  vec2 p=(vUv-0.5)*vec2(asp,1.0)*2.0;
+  float sR=uSphereR, sR2=sR*sR, d2=dot(p,p);
 
-  /* ── Background ── */
-  vec4 galSample  = texture2D(uGalaxy, vUv);
-  vec3 starSample = texture2D(uStars,  vUv).rgb;
+  /* Background — MW band over pure black */
+  vec4 mw=texture2D(uGalaxy,vUv);
+  vec3 col=mw.rgb*mw.a + texture2D(uStars,vUv).rgb*0.40;
 
-  /* Galaxy composited over pure black (respects alpha — dark areas stay black) */
-  vec3 col = galSample.rgb * galSample.a * 0.88     /* galaxy with proper alpha   */
-           + starSample * 0.42;                     /* stars on top               */
+  /* Caustic */
+  col+=hsl2rgb(uHue,0.55,0.85)*exp(-length(p-vec2(0.22,-0.22)*sR)*11.0)*0.07;
 
-  /* Very subtle violet ambient so deep black isn't completely dead */
-  col += vec3(0.008, 0.006, 0.018);
+  if(d2<sR2){
+    vec3 P0=vec3(p,sqrt(max(0.0,sR2-d2)));
+    vec3 hitN=normalize(P0);
+    float dt=uTime*0.18;
+    vec2 surf=vec2(sin(p.x*9.0+dt)*cos(p.y*7.0+dt*0.7),
+                   cos(p.x*8.0-dt*0.8)*sin(p.y*10.0+dt))*uSurfaceDistor*0.09;
 
-  /* Caustic pool cast by sphere onto background */
-  vec2 causticC = vec2(0.22,-0.22) * sR;
-  col += hsl2rgb(uHue, 0.55, 0.85) * exp(-length(p - causticC) * 11.0) * 0.07;
-
-  /* ── Sphere ── */
-  if(d2 < sR2){
-    float zEntry = sqrt(max(0.0, sR2 - d2));
-    vec3  P0     = vec3(p, zEntry);
-    vec3  hitN   = normalize(P0);               /* outward normal at entry */
-
-    /* ─── Surface micro-distortion (beats → ripples) ─── */
-    float dt = uTime * 0.18;
-    vec2 surf = vec2(
-      sin(p.x * 9.0 + dt) * cos(p.y * 7.0  + dt * 0.7),
-      cos(p.x * 8.0 - dt * 0.8) * sin(p.y * 10.0 + dt)
-    ) * uSurfaceDistor * 0.09;
-
-    /* ─────────────────────────────────────────────────────────────────
-       PASS 1 — Primary transmission, Cauchy chromatic dispersion
-       Borosilicate glass Cauchy coefficients:
-         A = 1.503   B = 0.00420 µm²
-         at λ_R=0.65µm → n=1.510
-         at λ_G=0.55µm → n=1.520
-         at λ_B=0.45µm → n=1.533
-    ─────────────────────────────────────────────────────────────────── */
-    vec2 uvR = refractUV(P0, hitN, 1.510, asp, surf);
-    vec2 uvG = refractUV(P0, hitN, 1.520, asp, surf);
-    vec2 uvB = refractUV(P0, hitN, 1.533, asp, surf);
-
+    /* Cauchy dispersion */
     vec3 glass;
-    glass.r = texture2D(uGalaxy, uvR).r * 0.68;
-    glass.g = texture2D(uGalaxy, uvG).g * 0.68;
-    glass.b = texture2D(uGalaxy, uvB).b * 0.68;
+    glass.r=texture2D(uGalaxy,refractUV(P0,hitN,1.510,asp,surf)).r*0.68;
+    glass.g=texture2D(uGalaxy,refractUV(P0,hitN,1.520,asp,surf)).g*0.68;
+    glass.b=texture2D(uGalaxy,refractUV(P0,hitN,1.533,asp,surf)).b*0.68;
 
-    /* ─────────────────────────────────────────────────────────────────
-       PASS 2 — Internal reflection bounce (the "marble rainbow ring")
-       Physics: at the back surface, a Fresnel fraction of light
-       reflects internally instead of transmitting. That reflected ray
-       travels back, hits the front surface, and exits — creating the
-       characteristic iridescent caustic ring seen in glass spheres.
-       We use the green IOR for the path and add chromatic spread on
-       the exit UV (dispersion on the second bounce is stronger because
-       the path inside is longer).
-    ─────────────────────────────────────────────────────────────────── */
+    /* Internal reflection bounce */
     {
-      float n      = 1.520;
-      vec3  inc    = vec3(0.0, 0.0, -1.0);
-      vec3  rDir   = refract(inc, hitN, 1.0/n);          /* entry refraction  */
-      float tExit  = -2.0 * dot(P0, rDir);
-      vec3  Pexit  = P0 + rDir * tExit;                  /* back-wall point   */
-      vec3  exitN  = normalize(Pexit);                    /* outward at back   */
-
-      /* Fresnel at back wall (light inside hitting it) */
-      float cosBack    = abs(dot(rDir, -exitN));
-      float fresnelBk  = schlick(cosBack, 0.04);          /* ≈0.04–0.18       */
-
-      /* Internally reflected ray (bounces back toward front) */
-      vec3 inRefl = reflect(rDir, -exitN);
-
-      /* Where does it hit the front surface?
-         |Pexit + inRefl·t|² = sR²  →  t = -2·dot(Pexit, inRefl) (the non-zero root) */
-      float t2 = -2.0 * dot(Pexit, inRefl);
-
-      if(t2 > 0.001){
-        vec3  P2    = Pexit + inRefl * t2;               /* second hit on sphere */
-        vec3  N2out = normalize(P2);                     /* outward normal there */
-        vec3  eRay2 = refract(inRefl, -N2out, n);        /* refract back to air  */
-
-        /* eRay2 length==0 would mean TIR — clamp instead of branch */
-        float valid = step(0.001, length(eRay2));
-
-        /* Fresnel at front exit (second time) */
-        float cosExit2  = abs(dot(inRefl, -N2out));
-        float fresnelEx = schlick(cosExit2, 0.04);
-        float energy    = fresnelBk * (1.0 - fresnelEx) * valid;
-
-        /* UV for the secondary ray — with stronger chromatic spread
-           (longer path = more dispersion) */
-        vec2 baseUv2 = (P2.xy + eRay2.xy * 1.8 + surf * 0.6) / vec2(asp,1.0) * 0.5 + 0.5;
-        /* The rainbow ring has more pronounced R/B split than the primary path */
-        vec2 chromOff = normalize(p + vec2(0.001)) / vec2(asp,1.0) * 0.022;
+      float n=1.520;
+      vec3 rDir=refract(vec3(0.0,0.0,-1.0),hitN,1.0/n);
+      vec3 Pex=P0+rDir*(-2.0*dot(P0,rDir));
+      vec3 inR=reflect(rDir,-normalize(Pex));
+      float t2=-2.0*dot(Pex,inR);
+      if(t2>0.001){
+        vec3 P2=Pex+inR*t2; vec3 N2=normalize(P2);
+        vec3 eR2=refract(inR,-N2,n);
+        float valid=step(0.001,length(eR2));
+        float energy=schlick(abs(dot(rDir,-normalize(Pex))),0.04)*(1.0-schlick(abs(dot(inR,-N2)),0.04))*valid;
+        vec2 uv2=(P2.xy+eR2.xy*1.8+surf*0.6)/vec2(asp,1.0)*0.5+0.5;
+        vec2 co=normalize(p+vec2(0.001))/vec2(asp,1.0)*0.022;
         vec3 ring;
-        ring.r = texture2D(uGalaxy, clamp(baseUv2 + chromOff,       0.001,0.999)).r;
-        ring.g = texture2D(uGalaxy, clamp(baseUv2,                   0.001,0.999)).g;
-        ring.b = texture2D(uGalaxy, clamp(baseUv2 - chromOff,       0.001,0.999)).b;
-
-        /* Boost: the ring has its own emissive tint (iridescent arc) */
-        float arcAngle  = atan(P2.y, P2.x);
-        float arcHue    = uHue + arcAngle / (2.0*3.14159) * 0.35; /* rainbow sweep */
-        ring += hsl2rgb(arcHue, 0.9, 0.7) * 0.12 * energy;
-
-        glass += ring * energy * 0.55;
+        ring.r=texture2D(uGalaxy,clamp(uv2+co,0.001,0.999)).r;
+        ring.g=texture2D(uGalaxy,clamp(uv2,0.001,0.999)).g;
+        ring.b=texture2D(uGalaxy,clamp(uv2-co,0.001,0.999)).b;
+        ring+=hsl2rgb(uHue+atan(P2.y,P2.x)/(2.0*3.14159)*0.35,0.9,0.7)*0.12*energy;
+        glass+=ring*energy*0.55;
       }
     }
 
-    /* ─── Emissive plasma nodes ─── */
-    float nR = sR * 0.22;
-    vec3 plasma = hsl2rgb(uHue, 1.0, 0.88) * exp(-d2/(sR2*0.28)) * uCoreI;
-    plasma += hsl2rgb(uNH0,0.95,0.72) * nodeG(p, uN0.xy, nR) * uN0.z;
-    plasma += hsl2rgb(uNH1,0.95,0.72) * nodeG(p, uN1.xy, nR) * uN1.z;
-    plasma += hsl2rgb(uNH2,0.95,0.72) * nodeG(p, uN2.xy, nR) * uN2.z;
-    plasma += hsl2rgb(uNH3,0.95,0.72) * nodeG(p, uN3.xy, nR) * uN3.z;
-    plasma += hsl2rgb(uNH4,0.95,0.72) * nodeG(p, uN4.xy, nR) * uN4.z;
-    plasma += hsl2rgb(uNH5,0.95,0.72) * nodeG(p, uN5.xy, nR) * uN5.z;
-    plasma += hsl2rgb(uNH6,0.95,0.72) * nodeG(p, uN6.xy, nR) * uN6.z;
-    glass += plasma;
+    /* Plasma */
+    float nR=sR*0.22;
+    vec3 plasma=hsl2rgb(uHue,1.0,0.88)*exp(-d2/(sR2*0.28))*uCoreI;
+    plasma+=hsl2rgb(uNH0,0.95,0.72)*nodeG(p,uN0.xy,nR)*uN0.z;
+    plasma+=hsl2rgb(uNH1,0.95,0.72)*nodeG(p,uN1.xy,nR)*uN1.z;
+    plasma+=hsl2rgb(uNH2,0.95,0.72)*nodeG(p,uN2.xy,nR)*uN2.z;
+    plasma+=hsl2rgb(uNH3,0.95,0.72)*nodeG(p,uN3.xy,nR)*uN3.z;
+    plasma+=hsl2rgb(uNH4,0.95,0.72)*nodeG(p,uN4.xy,nR)*uN4.z;
+    plasma+=hsl2rgb(uNH5,0.95,0.72)*nodeG(p,uN5.xy,nR)*uN5.z;
+    plasma+=hsl2rgb(uNH6,0.95,0.72)*nodeG(p,uN6.xy,nR)*uN6.z;
+    glass+=plasma;
 
-    /* ─── Limb brightening (edge surface glow) ─── */
-    float limb = pow(clamp(1.0 - hitN.z, 0.0, 1.0), 2.2);
-    glass += hsl2rgb(uHue+0.07, 0.95, 0.72) * limb * (0.08 + uSurfaceDistor * 0.55);
-
-    /* ─── Fresnel front-surface reflection ─── */
-    float fresnel = schlick(hitN.z, 0.04);
-    glass = mix(glass, vec3(1.0), fresnel * 0.38);
-
-    /* ─── Dual specular highlights (key + fill) ─── */
-    vec3 keyLight  = normalize(vec3(-0.5,  0.6, 1.0));
-    vec3 fillLight = normalize(vec3( 0.4, -0.5, 0.8));
-    glass += pow(max(0.0, dot(hitN, keyLight)),  110.0);
-    glass += pow(max(0.0, dot(hitN, fillLight)),  55.0) * 0.18;
-
-    col = glass;
+    glass+=hsl2rgb(uHue+0.07,0.95,0.72)*pow(clamp(1.0-hitN.z,0.0,1.0),2.2)*(0.08+uSurfaceDistor*0.55);
+    glass=mix(glass,vec3(1.0),schlick(hitN.z,0.04)*0.38);
+    glass+=pow(max(0.0,dot(hitN,normalize(vec3(-0.5,0.6,1.0)))),110.0);
+    glass+=pow(max(0.0,dot(hitN,normalize(vec3(0.4,-0.5,0.8)))),55.0)*0.18;
+    col=glass;
   }
 
-  /* ── Rim glow ── */
-  float edge = abs(sqrt(d2) - sR);
-  col += hsl2rgb(uHue, 0.8, 0.9) * exp(-edge * 160.0) * 0.38;
-
-  gl_FragColor = vec4(col, 1.0);
+  col+=hsl2rgb(uHue,0.8,0.9)*exp(-abs(sqrt(d2)-sR)*160.0)*0.38;
+  gl_FragColor=vec4(col,1.0);
 }
 `;
 
-/* ── Bloom threshold + horizontal blur (half-res) ──
-   Fully unrolled — no dynamic array indexing (WebGL1 safe + GPU-friendly) */
-const BLOOM_H_FRAG = `
+const BLOOM_H_FRAG=`
 precision mediump float;
-uniform sampler2D uScene;
-uniform vec2 uTexelSize;
-varying vec2 vUv;
-
-/* Soft-knee threshold: extracts bright areas while preserving color cast */
+uniform sampler2D uScene; uniform vec2 uTexelSize; varying vec2 vUv;
 vec3 thresh(vec3 s){
-  float lum = dot(s, vec3(0.2126,0.7152,0.0722));
-  float knee = 0.52;
-  float kw   = 0.18;
-  /* Smooth knee via quadratic ramp */
-  float ramp  = clamp((lum - (knee - kw)) / (2.0*kw), 0.0, 1.0);
-  float t     = ramp * ramp * (lum - knee + kw) / max(lum, 0.0001);
-  return s * max(0.0, lum - knee + t) / max(lum, 0.0001);
+  float lum=dot(s,vec3(0.2126,0.7152,0.0722)),knee=0.52,kw=0.18;
+  float ramp=clamp((lum-(knee-kw))/(2.0*kw),0.0,1.0);
+  return s*max(0.0,lum-knee+ramp*ramp*(lum-knee+kw))/max(lum,0.0001);
 }
-
 void main(){
-  float ox = uTexelSize.x;
-  /* 9-tap horizontal Gaussian, σ≈2 — weights sum to 1 */
-  vec3 s0 = thresh(texture2D(uScene, clamp(vUv+vec2(-4.0*ox,0.0),0.001,0.999)).rgb);
-  vec3 s1 = thresh(texture2D(uScene, clamp(vUv+vec2(-3.0*ox,0.0),0.001,0.999)).rgb);
-  vec3 s2 = thresh(texture2D(uScene, clamp(vUv+vec2(-2.0*ox,0.0),0.001,0.999)).rgb);
-  vec3 s3 = thresh(texture2D(uScene, clamp(vUv+vec2(-1.0*ox,0.0),0.001,0.999)).rgb);
-  vec3 s4 = thresh(texture2D(uScene,       vUv                                ).rgb);
-  vec3 s5 = thresh(texture2D(uScene, clamp(vUv+vec2( 1.0*ox,0.0),0.001,0.999)).rgb);
-  vec3 s6 = thresh(texture2D(uScene, clamp(vUv+vec2( 2.0*ox,0.0),0.001,0.999)).rgb);
-  vec3 s7 = thresh(texture2D(uScene, clamp(vUv+vec2( 3.0*ox,0.0),0.001,0.999)).rgb);
-  vec3 s8 = thresh(texture2D(uScene, clamp(vUv+vec2( 4.0*ox,0.0),0.001,0.999)).rgb);
-  vec3 acc = s0*0.028 + s1*0.067 + s2*0.124 + s3*0.179 + s4*0.204
-           + s5*0.179 + s6*0.124 + s7*0.067 + s8*0.028;
-  gl_FragColor = vec4(acc, 1.0);
-}
-`;
+  float ox=uTexelSize.x;
+  vec3 a=thresh(texture2D(uScene,clamp(vUv+vec2(-4.0*ox,0.0),0.001,0.999)).rgb);
+  vec3 b=thresh(texture2D(uScene,clamp(vUv+vec2(-3.0*ox,0.0),0.001,0.999)).rgb);
+  vec3 c=thresh(texture2D(uScene,clamp(vUv+vec2(-2.0*ox,0.0),0.001,0.999)).rgb);
+  vec3 d=thresh(texture2D(uScene,clamp(vUv+vec2(-1.0*ox,0.0),0.001,0.999)).rgb);
+  vec3 e=thresh(texture2D(uScene,vUv).rgb);
+  vec3 f=thresh(texture2D(uScene,clamp(vUv+vec2(1.0*ox,0.0),0.001,0.999)).rgb);
+  vec3 g=thresh(texture2D(uScene,clamp(vUv+vec2(2.0*ox,0.0),0.001,0.999)).rgb);
+  vec3 h=thresh(texture2D(uScene,clamp(vUv+vec2(3.0*ox,0.0),0.001,0.999)).rgb);
+  vec3 k=thresh(texture2D(uScene,clamp(vUv+vec2(4.0*ox,0.0),0.001,0.999)).rgb);
+  gl_FragColor=vec4(a*0.028+b*0.067+c*0.124+d*0.179+e*0.204+f*0.179+g*0.124+h*0.067+k*0.028,1.0);
+}`;
 
-/* ── Bloom vertical blur (fully unrolled) ── */
-const BLOOM_V_FRAG = `
+const BLOOM_V_FRAG=`
 precision mediump float;
-uniform sampler2D uBloom;
-uniform vec2 uTexelSize;
-varying vec2 vUv;
+uniform sampler2D uBloom; uniform vec2 uTexelSize; varying vec2 vUv;
 void main(){
-  float oy = uTexelSize.y;
-  vec3 s0 = texture2D(uBloom, clamp(vUv+vec2(0.0,-4.0*oy),0.001,0.999)).rgb;
-  vec3 s1 = texture2D(uBloom, clamp(vUv+vec2(0.0,-3.0*oy),0.001,0.999)).rgb;
-  vec3 s2 = texture2D(uBloom, clamp(vUv+vec2(0.0,-2.0*oy),0.001,0.999)).rgb;
-  vec3 s3 = texture2D(uBloom, clamp(vUv+vec2(0.0,-1.0*oy),0.001,0.999)).rgb;
-  vec3 s4 = texture2D(uBloom,       vUv                               ).rgb;
-  vec3 s5 = texture2D(uBloom, clamp(vUv+vec2(0.0, 1.0*oy),0.001,0.999)).rgb;
-  vec3 s6 = texture2D(uBloom, clamp(vUv+vec2(0.0, 2.0*oy),0.001,0.999)).rgb;
-  vec3 s7 = texture2D(uBloom, clamp(vUv+vec2(0.0, 3.0*oy),0.001,0.999)).rgb;
-  vec3 s8 = texture2D(uBloom, clamp(vUv+vec2(0.0, 4.0*oy),0.001,0.999)).rgb;
-  vec3 acc = s0*0.028 + s1*0.067 + s2*0.124 + s3*0.179 + s4*0.204
-           + s5*0.179 + s6*0.124 + s7*0.067 + s8*0.028;
-  gl_FragColor = vec4(acc, 1.0);
-}
-`;
+  float oy=uTexelSize.y;
+  vec3 a=texture2D(uBloom,clamp(vUv+vec2(0.0,-4.0*oy),0.001,0.999)).rgb;
+  vec3 b=texture2D(uBloom,clamp(vUv+vec2(0.0,-3.0*oy),0.001,0.999)).rgb;
+  vec3 c=texture2D(uBloom,clamp(vUv+vec2(0.0,-2.0*oy),0.001,0.999)).rgb;
+  vec3 d=texture2D(uBloom,clamp(vUv+vec2(0.0,-1.0*oy),0.001,0.999)).rgb;
+  vec3 e=texture2D(uBloom,vUv).rgb;
+  vec3 f=texture2D(uBloom,clamp(vUv+vec2(0.0,1.0*oy),0.001,0.999)).rgb;
+  vec3 g=texture2D(uBloom,clamp(vUv+vec2(0.0,2.0*oy),0.001,0.999)).rgb;
+  vec3 h=texture2D(uBloom,clamp(vUv+vec2(0.0,3.0*oy),0.001,0.999)).rgb;
+  vec3 k=texture2D(uBloom,clamp(vUv+vec2(0.0,4.0*oy),0.001,0.999)).rgb;
+  gl_FragColor=vec4(a*0.028+b*0.067+c*0.124+d*0.179+e*0.204+f*0.179+g*0.124+h*0.067+k*0.028,1.0);
+}`;
 
-/* ── Composite + tonemapping + vignette ── */
-const COMP_FRAG = `
+const COMP_FRAG=`
 precision highp float;
-uniform sampler2D uScene, uBloom;
-uniform vec2 uResolution;
-uniform float uTime;
+uniform sampler2D uScene,uBloom; uniform vec2 uResolution; uniform float uTime;
 varying vec2 vUv;
-
-vec3 aces(vec3 x){
-  return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14), 0.0, 1.0);
-}
-
+vec3 aces(vec3 x){return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0);}
 void main(){
-  vec3 scene = texture2D(uScene, vUv).rgb;
-  vec3 bloom = texture2D(uBloom, vUv).rgb;
+  vec3 scene=texture2D(uScene,vUv).rgb;
+  vec3 bloom=texture2D(uBloom,vUv).rgb;
+  vec3 ldr=pow(aces((scene+bloom*0.85)*0.92),vec3(1.0/2.2));
+  vec2 uv2=vUv*(1.0-vUv.yx);
+  ldr*=mix(0.82,1.0,pow(uv2.x*uv2.y*15.0,0.18));
+  gl_FragColor=vec4(ldr,1.0);
+}`;
 
-  /* HDR composite */
-  vec3 hdr = scene + bloom * 0.85;
-
-  /* ACES filmic tonemapping + gamma */
-  vec3 ldr = pow(aces(hdr * 0.92), vec3(1.0/2.2));
-
-  /* Subtle vignette */
-  vec2 uv2 = vUv * (1.0 - vUv.yx);
-  float vig = pow(uv2.x * uv2.y * 15.0, 0.18);
-  ldr *= mix(0.82, 1.0, vig);
-
-  gl_FragColor = vec4(ldr, 1.0);
-}
-`;
-
-/* ─────────────────────────────────────────────────────────
-   RENDERER + SCENE
-───────────────────────────────────────────────────────── */
-const canvas = document.getElementById('c');
-const renderer = new THREE.WebGLRenderer({
-  canvas,
-  antialias: true,           // MSAA on the final pass
-  powerPreference: 'high-performance', // Tells Apple GPU driver: use full power
-  alpha: false,              // No transparency compositing overhead
-  stencil: false,            // Don't allocate stencil buffer (saves VRAM)
-  depth: false               // Fullscreen quad doesn't need depth
+/* ══════════════════════════════════════════════════════
+   RENDERER
+══════════════════════════════════════════════════════ */
+const canvas=document.getElementById('c');
+const renderer=new THREE.WebGLRenderer({
+  canvas,antialias:true,powerPreference:'high-performance',
+  alpha:false,stencil:false,depth:false
 });
-renderer.setPixelRatio(DPR); // Full native resolution (3x on iPhone Pro)
-renderer.setSize(W, H);
+renderer.setPixelRatio(DPR); renderer.setSize(W,H);
 
-/* Physical pixel dimensions for render targets */
-const PW = () => Math.round(W * DPR);
-const PH = () => Math.round(H * DPR);
+const PW=()=>Math.round(W*DPR), PH=()=>Math.round(H*DPR);
+const rtO={type:THREE.HalfFloatType,minFilter:THREE.LinearFilter,magFilter:THREE.LinearFilter,depthBuffer:false,stencilBuffer:false};
+const sceneRT=new THREE.WebGLRenderTarget(PW(),PH(),rtO);
+const bHW=()=>Math.round(W/2), bHH=()=>Math.round(H/2);
+const bRT1=new THREE.WebGLRenderTarget(bHW(),bHH(),{...rtO});
+const bRT2=new THREE.WebGLRenderTarget(bHW(),bHH(),{...rtO});
 
-/* RT flags */
-const rtOpts = { type: THREE.HalfFloatType, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, depthBuffer: false, stencilBuffer: false };
-
-/* Full-res scene */
-const sceneRT = new THREE.WebGLRenderTarget(PW(), PH(), rtOpts);
-
-/* Half-res bloom */
-const bloomHW = () => Math.round(W/2), bloomHH = () => Math.round(H/2);
-const bloomRT1 = new THREE.WebGLRenderTarget(bloomHW(), bloomHH(), {...rtOpts});
-const bloomRT2 = new THREE.WebGLRenderTarget(bloomHW(), bloomHH(), {...rtOpts});
-
-/* ── Uniforms ── */
-const scU = {
-  uGalaxy: {value: buildGalaxy()}, uStars: {value: buildStars()},
-  uTime: {value: 0}, uSphereR: {value: 0.4}, uHue: {value: 0.7},
-  uCoreI: {value: 0.25}, uSurfaceDistor: {value: 0}, uBeat: {value: 0},
-  uResolution: {value: new THREE.Vector2(W, H)},
-  uN0:{value:new THREE.Vector3()}, uN1:{value:new THREE.Vector3()},
-  uN2:{value:new THREE.Vector3()}, uN3:{value:new THREE.Vector3()},
-  uN4:{value:new THREE.Vector3()}, uN5:{value:new THREE.Vector3()},
+const scU={
+  uGalaxy:{value:buildMilkyWay()},uStars:{value:buildStars()},
+  uTime:{value:0},uSphereR:{value:0.4},uHue:{value:0.7},
+  uCoreI:{value:0.25},uSurfaceDistor:{value:0},uBeat:{value:0},
+  uResolution:{value:new THREE.Vector2(W,H)},
+  uN0:{value:new THREE.Vector3()},uN1:{value:new THREE.Vector3()},
+  uN2:{value:new THREE.Vector3()},uN3:{value:new THREE.Vector3()},
+  uN4:{value:new THREE.Vector3()},uN5:{value:new THREE.Vector3()},
   uN6:{value:new THREE.Vector3()},
-  uNH0:{value:0}, uNH1:{value:0}, uNH2:{value:0}, uNH3:{value:0},
-  uNH4:{value:0}, uNH5:{value:0}, uNH6:{value:0}
+  uNH0:{value:0},uNH1:{value:0},uNH2:{value:0},uNH3:{value:0},
+  uNH4:{value:0},uNH5:{value:0},uNH6:{value:0}
 };
+const bHU={uScene:{value:sceneRT.texture},uTexelSize:{value:new THREE.Vector2(1/bHW(),1/bHH())}};
+const bVU={uBloom:{value:bRT1.texture},uTexelSize:{value:new THREE.Vector2(1/bHW(),1/bHH())}};
+const cU ={uScene:{value:sceneRT.texture},uBloom:{value:bRT2.texture},uResolution:{value:new THREE.Vector2(W,H)},uTime:{value:0}};
 
-const bloomHU = {
-  uScene: {value: sceneRT.texture},
-  uTexelSize: {value: new THREE.Vector2(1/bloomHW(), 1/bloomHH())}
-};
-const bloomVU = {
-  uBloom: {value: bloomRT1.texture},
-  uTexelSize: {value: new THREE.Vector2(1/bloomHW(), 1/bloomHH())}
-};
-const compU = {
-  uScene: {value: sceneRT.texture},
-  uBloom: {value: bloomRT2.texture},
-  uResolution: {value: new THREE.Vector2(W, H)},
-  uTime: {value: 0}
-};
+const mkM=( f,u)=>new THREE.ShaderMaterial({uniforms:u,vertexShader:VERT,fragmentShader:f});
+const quad=new THREE.PlaneGeometry(2,2);
+const cam=new THREE.OrthographicCamera(-1,1,1,-1,0,1);
+const mkS=m=>{const s=new THREE.Scene();s.add(new THREE.Mesh(quad,m));return s;};
+const sS=mkS(mkM(SCENE_FRAG,scU)), bHS=mkS(mkM(BLOOM_H_FRAG,bHU));
+const bVS=mkS(mkM(BLOOM_V_FRAG,bVU)), cS=mkS(mkM(COMP_FRAG,cU));
 
-/* ── Materials & scenes ── */
-const mkMat = (frag, uniforms) => new THREE.ShaderMaterial({uniforms, vertexShader:VERT, fragmentShader:frag});
-const sceneMat  = mkMat(SCENE_FRAG,   scU);
-const bloomHMat = mkMat(BLOOM_H_FRAG, bloomHU);
-const bloomVMat = mkMat(BLOOM_V_FRAG, bloomVU);
-const compMat   = mkMat(COMP_FRAG,    compU);
-
-const quad = new THREE.PlaneGeometry(2, 2);
-const cam  = new THREE.OrthographicCamera(-1,1,1,-1,0,1);
-const mkScene = mat => { const s=new THREE.Scene(); s.add(new THREE.Mesh(quad,mat)); return s; };
-const sScene = mkScene(sceneMat);
-const bHScene = mkScene(bloomHMat);
-const bVScene = mkScene(bloomVMat);
-const cScene  = mkScene(compMat);
-
-/* ─────────────────────────────────────────────────────────
-   NODES
-───────────────────────────────────────────────────────── */
-const nodes = Array.from({length:7}, (_,i) => ({
-  orbit: 0.14 + Math.random() * 0.36,
-  angle: Math.random() * Math.PI * 2,
-  tilt:  Math.random() * Math.PI,
-  speed: 0.004 + Math.random() * 0.009,
-  band:  [i/7, (i+1)/7],
-  hOff:  i/7
+const nodes=Array.from({length:7},(_,i)=>({
+  orbit:0.14+Math.random()*0.36,angle:Math.random()*Math.PI*2,
+  tilt:Math.random()*Math.PI,speed:0.004+Math.random()*0.009,
+  band:[i/7,(i+1)/7],hOff:i/7
 }));
+const getSR=()=>Math.min(W,H)*0.41/H;
 
-const getSR = () => Math.min(W, H) * 0.41 / H;
-
-/* ─────────────────────────────────────────────────────────
-   RESIZE
-───────────────────────────────────────────────────────── */
-const onResize = () => {
-  W = window.innerWidth; H = window.innerHeight;
-  renderer.setSize(W, H);
-  sceneRT.setSize(PW(), PH());
-  bloomRT1.setSize(bloomHW(), bloomHH());
-  bloomRT2.setSize(bloomHW(), bloomHH());
-  scU.uResolution.value.set(W, H);
-  compU.uResolution.value.set(W, H);
-  bloomHU.uTexelSize.value.set(1/bloomHW(), 1/bloomHH());
-  bloomVU.uTexelSize.value.set(1/bloomHW(), 1/bloomHH());
+const onResize=()=>{
+  W=window.innerWidth;H=window.innerHeight;
+  renderer.setSize(W,H);
+  sceneRT.setSize(PW(),PH()); bRT1.setSize(bHW(),bHH()); bRT2.setSize(bHW(),bHH());
+  scU.uResolution.value.set(W,H); cU.uResolution.value.set(W,H);
+  bHU.uTexelSize.value.set(1/bHW(),1/bHH()); bVU.uTexelSize.value.set(1/bHW(),1/bHH());
 };
-window.addEventListener('resize', onResize);
-// iOS orientation change
-window.addEventListener('orientationchange', () => setTimeout(onResize, 200));
+window.addEventListener('resize',onResize);
+window.addEventListener('orientationchange',()=>setTimeout(onResize,200));
 
-/* ─────────────────────────────────────────────────────────
-   RENDER LOOP — timestamp-based, frame-rate independent
-───────────────────────────────────────────────────────── */
-let prevTime = performance.now();
-
-function loop(now) {
+let prevTime=performance.now();
+function loop(now){
   requestAnimationFrame(loop);
+  const dt=Math.min((now-prevTime)/1000,0.05), T=now/1000;
+  prevTime=now;
 
-  /* Delta time in seconds, capped to avoid jumps after tab switch */
-  const dt  = Math.min((now - prevTime) / 1000, 0.05);
-  const T   = now / 1000; // seconds
-  prevTime  = now;
+  if(live&&analyser) analyser.getByteFrequencyData(freqData);
+  const rawB  =live?fBand(0,0.10):0.07+0.03*Math.sin(T*1.1);
+  const rawSub=live?fBand(0,0.025):rawB*0.6;
+  bs  =lerp(bs,  rawB,  1-Math.exp(-dt*12));
+  sub =lerp(sub, rawSub,1-Math.exp(-dt*14));
+  const delta=rawB-lastBs;
+  if(delta>0.028) beatImpact=clamp(delta*5.8,0.4,1.0);
+  beatImpact=lerp(beatImpact,0,1-Math.exp(-dt*5));
+  lastBs=lerp(lastBs,rawB,1-Math.exp(-dt*10));
 
-  /* ── Audio ── */
-  if(live && analyser) analyser.getByteFrequencyData(freqData);
-  const rawB   = live ? fBand(0, 0.10) : 0.07 + 0.03 * Math.sin(T * 1.1);
-  const rawSub = live ? fBand(0, 0.025): rawB * 0.6;
-  bs   = lerp(bs,   rawB,   1 - Math.exp(-dt * 12));
-  sub  = lerp(sub,  rawSub, 1 - Math.exp(-dt * 14));
+  const baseR=getSR();
+  scU.uSphereR.value    =baseR*(1.0+sub*0.12+beatImpact*0.055);
+  scU.uSurfaceDistor.value=lerp(scU.uSurfaceDistor.value,delta*3.8,0.25);
+  scU.uBeat.value=beatImpact; scU.uTime.value=T;
+  scU.uCoreI.value=0.22+sub*0.35+beatImpact*0.25;
+  const hue=0.6+Math.sin(T*0.5)*0.1;
+  scU.uHue.value=hue; cU.uTime.value=T;
 
-  const delta = rawB - lastBs;
-  if(delta > 0.028) beatImpact = clamp(delta * 5.8, 0.4, 1.0);
-  beatImpact = lerp(beatImpact, 0, 1 - Math.exp(-dt * 5));
-  lastBs = lerp(lastBs, rawB, 1 - Math.exp(-dt * 10));
-
-  /* ── Sphere uniforms ── */
-  const baseR = getSR();
-  scU.uSphereR.value    = baseR * (1.0 + sub * 0.12 + beatImpact * 0.055);
-  scU.uSurfaceDistor.value = lerp(scU.uSurfaceDistor.value, delta * 3.8, 0.25);
-  scU.uBeat.value       = beatImpact;
-  scU.uTime.value       = T;
-  scU.uCoreI.value      = 0.22 + sub * 0.35 + beatImpact * 0.25;
-  const hue = 0.6 + Math.sin(T * 0.5) * 0.1;
-  scU.uHue.value        = hue;
-  compU.uTime.value     = T;
-
-  /* ── Nodes ── */
-  nodes.forEach((nd, i) => {
-    const bv   = live ? fBand(nd.band[0], nd.band[1]) : 0.05 + 0.02*Math.sin(T*0.7+i);
-    nd.angle  += nd.speed * dt * 60 * (1.0 + bv * 11.0);
-    const orbR = baseR * (nd.orbit + bv * 0.38);
-    const nx   = Math.cos(nd.angle) * orbR;
-    const ny   = Math.sin(nd.angle) * Math.cos(nd.tilt) * orbR;
-    const nz   = Math.sin(nd.angle) * Math.sin(nd.tilt);
-    const zFd  = 0.5 + 0.5 * nz;
-    scU[`uN${i}`].value.set(nx, ny, (0.22 + bv * 0.28) * zFd);
-    scU[`uNH${i}`].value = hue + nd.hOff * 0.22;
+  nodes.forEach((nd,i)=>{
+    const bv=live?fBand(nd.band[0],nd.band[1]):0.05+0.02*Math.sin(T*0.7+i);
+    nd.angle+=nd.speed*dt*60*(1.0+bv*11.0);
+    const orbR=baseR*(nd.orbit+bv*0.38);
+    const nx=Math.cos(nd.angle)*orbR, ny=Math.sin(nd.angle)*Math.cos(nd.tilt)*orbR;
+    const nz=Math.sin(nd.angle)*Math.sin(nd.tilt);
+    scU[`uN${i}`].value.set(nx,ny,(0.22+bv*0.28)*(0.5+0.5*nz));
+    scU[`uNH${i}`].value=hue+nd.hOff*0.22;
   });
 
-  /* ── 4-pass render ── */
-  // 1. Scene → sceneRT (full device-pixel resolution)
-  renderer.setRenderTarget(sceneRT);
-  renderer.render(sScene, cam);
-
-  // 2. Bloom threshold + H-blur → bloomRT1 (half-res)
-  renderer.setRenderTarget(bloomRT1);
-  renderer.render(bHScene, cam);
-
-  // 3. Bloom V-blur → bloomRT2 (half-res)
-  renderer.setRenderTarget(bloomRT2);
-  renderer.render(bVScene, cam);
-
-  // 4. Composite → screen
-  renderer.setRenderTarget(null);
-  renderer.render(cScene, cam);
+  renderer.setRenderTarget(sceneRT); renderer.render(sS,cam);
+  renderer.setRenderTarget(bRT1);    renderer.render(bHS,cam);
+  renderer.setRenderTarget(bRT2);    renderer.render(bVS,cam);
+  renderer.setRenderTarget(null);    renderer.render(cS,cam);
 }
 requestAnimationFrame(loop);
 </script>
