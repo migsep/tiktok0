@@ -140,8 +140,9 @@ const attachAndPlay = async (el, objUrl, isVideo) => {
   el.playsInline = true;
   el.loop = true;
   el.volume = 1.0;
-  el.muted = false;           /* explicitement non muté */
-  el.crossOrigin = 'anonymous'; /* évite les erreurs CORS sur certains builds */
+  el.muted = false;
+  /* PAS de crossOrigin sur une blob URL — iOS lève une erreur CORS silencieuse
+     qui bloque createMediaElementSource sans aucun message visible. */
   el.src = objUrl;
 
   /* ④ OBLIGATOIRE iOS : l'élément doit être dans le DOM
@@ -158,14 +159,16 @@ const attachAndPlay = async (el, objUrl, isVideo) => {
 
   setupAnalyser();
   try {
-    /* ⑤ createMediaElementSource ne peut être appelé qu'une fois par élément,
-          et l'élément DOIT être dans le DOM sur iOS. */
-    actx.createMediaElementSource(el).connect(analyser);
+    /* createMediaElementSource ne peut être appelé qu'une fois par élément,
+       et l'élément DOIT être dans le DOM sur iOS. */
+    const src = actx.createMediaElementSource(el);
+    src.connect(analyser);
     analyser.connect(actx.destination);
   } catch(err) {
-    /* Si l'élément est déjà sourcé (rare), on continue quand même —
-       l'audio jouera sans visualisation plutôt que de planter. */
+    /* Si la connexion Web Audio échoue, l'élément jouera quand même
+       avec son audio natif — l'orbe sera moins réactif mais le son sortira. */
     console.warn('Web Audio connect:', err);
+    try { analyser.connect(actx.destination); } catch(_){}
   }
   return true;
 };
@@ -210,19 +213,22 @@ document.getElementById('fileInput').onchange = async e => {
   const trackEl=document.getElementById('track');
   trackEl.textContent=f.name.replace(/\.[^.]+$/,''); trackEl.style.display='block';
 
-  const isVideo=f.type.startsWith('video/')||/\.(mp4|mov|m4v|webm|mkv|avi)$/i.test(f.name);
+  /* iOS peut retourner f.type vide ou 'application/octet-stream' pour des
+     fichiers vidéo — on s'appuie sur l'extension en priorité. */
+  const ext = f.name.split('.').pop().toLowerCase();
+  const isVideo = /^(mp4|mov|m4v|webm|mkv|avi)$/.test(ext) || f.type.startsWith('video/');
   const objUrl=URL.createObjectURL(f); currentObjUrl=objUrl;
 
-  /* ⑥ On crée le contexte audio ICI, dans le gestionnaire du geste utilisateur,
-        avant tout await asynchrone — iOS l'exige. */
+  /* On crée le contexte audio ICI, dans le gestionnaire du geste utilisateur,
+     avant tout await asynchrone — iOS l'exige. */
   try { await ensureActx(); } catch(err) {
     showToast('AudioContext impossible<br>'+err.message, 5000); return;
   }
 
   if(isVideo){
     const vid=document.createElement('video');
-    await attachAndPlay(vid, objUrl, true);
-    goLive();
+    const ok = await attachAndPlay(vid, objUrl, true);
+    if(ok) goLive();
     return;
   }
 
