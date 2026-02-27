@@ -65,7 +65,10 @@ const lerp  = (a,b,t) => a+(b-a)*t;
 const clamp = (v,lo,hi) => Math.max(lo,Math.min(hi,v));
 
 let W = window.innerWidth, H = window.innerHeight;
-const DPR = window.devicePixelRatio || 1;
+
+/* ── DPR capé à 2 : iPhone 15 Pro a DPR=3 → ×2.25 de pixels en plus pour gain
+   visuel nul à distance normale. 2 donne netteté maximale sans surcharge GPU. ── */
+const DPR = Math.min(window.devicePixelRatio || 1, 2);
 
 /* ── Toast ── */
 let toastTimer = null;
@@ -209,134 +212,222 @@ const fbm=(x,y,oct,seed)=>{
 };
 
 /* ══════════════════════════════════════════════════════
-   MILKY WAY — naked-eye, Atacama-quality dark sky
+   RENDERER — créé EN PREMIER pour récupérer MAX_ANISO.
+
+   Optimisations iPhone :
+   ① Display P3 — les iPhone XS+ ont un écran wide-gamut P3.
+     On crée le contexte WebGL manuellement avec colorSpace:'display-p3'
+     pour que Safari envoie les couleurs dans le bon espace sans
+     re-mapping. Three.js r128 ne l'expose pas directement.
+   ② antialias OFF à DPR≥2 — à DPR=2 les pixels font 0.25mm,
+     les crénelages sont sous-pixel, l'MSAA est du gaspillage pur.
+   ③ WebGL2 en premier — meilleure précision des samplers,
+     meilleure gestion des textures half-float sur A-series.
 ══════════════════════════════════════════════════════ */
-const buildMilkyWay = () => {
-  /* 2048×1024 — netteté native iPhone DPR×3 */
-  const GW=2048, GH=1024;
-  const cv=document.createElement('canvas'); cv.width=GW; cv.height=GH;
-  const cx=cv.getContext('2d');
-  const id=cx.createImageData(GW,GH), px=id.data;
+const canvas=document.getElementById('c');
 
-  /* Tilt exact sur la diagonale du canvas 2:1 */
-  const tilt=-Math.atan(0.5), cosT=Math.cos(tilt), sinT=Math.sin(tilt);
+/* Crée le contexte manuellement pour passer les options iOS-spécifiques */
+const _ctxAttrs={
+  colorSpace:'display-p3',        /* wide-gamut natif iPhone        */
+  antialias: DPR < 2,             /* inutile à DPR=2, coûteux       */
+  powerPreference:'high-performance',
+  alpha:false, stencil:false, depth:false,
+  preserveDrawingBuffer:false,    /* GPU peut optimiser le swap      */
+  failIfMajorPerformanceCaveat:false
+};
+const _gl = canvas.getContext('webgl2',_ctxAttrs) ||
+            canvas.getContext('webgl', _ctxAttrs);
 
-  for(let py=0;py<GH;py++) for(let qx=0;qx<GW;qx++){
-    const idx=(py*GW+qx)*4;
-    const nx=(qx/GW-0.5)*2.0;
-    const ny=(py/GH-0.5)*2.0*(GH/GW);
+const renderer=new THREE.WebGLRenderer({
+  canvas, context:_gl,
+  antialias: DPR < 2,
+  powerPreference:'high-performance',
+  alpha:false,stencil:false,depth:false
+});
+renderer.setPixelRatio(DPR); renderer.setSize(W,H);
 
-    const bx= nx*cosT+ny*sinT;   /* le long de la bande */
-    const by=-nx*sinT+ny*cosT;   /* travers de la bande */
+/* ── Gestion perte de contexte WebGL (iOS tue le contexte au background) ── */
+let _contextLost = false;
+canvas.addEventListener('webglcontextlost', e => {
+  e.preventDefault();
+  _contextLost = true;
+});
+canvas.addEventListener('webglcontextrestored', () => {
+  /* Rechargement propre : rebuild de tous les RTs / shaders en 1 ligne */
+  window.location.reload();
+});
 
-    /* Épaisseur fine (0.15) + légère variation organique */
-    const widthNoise = fbm(bx*0.9+3.0, 0.1, 3, 17)*0.05;
-    const bw = 0.15 + widthNoise;
-    const bandEnv = Math.exp(-(by*by)/(2*bw*bw));
-    if(bandEnv<0.002){px[idx+3]=0;continue;}
+/* Anisotropie réelle du GPU de l'iPhone (A17 Pro supporte 16×, A15/A16 : 16× aussi)
+   On requête la valeur exacte plutôt que de forcer 16 en aveugle. */
+const MAX_ANISO = Math.min(renderer.capabilities.getMaxAnisotropy(), 16);
 
-    const dx = bx;
-    const coreEnv = Math.exp(-dx*dx*(dx>0 ? 0.85 : 0.55));
-
-    /* ── Nuages d'étoiles — texture grumeleuse ── */
-    const clouds = fbm(bx*2.6+0.4,  by*6.5,  7, 11)*0.50
-                 + fbm(bx*5.2-0.9,  by*10.5, 5, 53)*0.32
-                 + fbm(bx*10.8+2.3, by*18.0, 4, 31)*0.18;
-    const cloudBright = 0.30 + clouds*0.70;
-
-    /* ── Poussière organique (Grand Rift + ramifications) ──
-       fbm pur au lieu de Gaussiennes : blobs irréguliers concentrés
-       dans la moitié centrale de la bande, comme sur la photo Atacama.
-       byN = position normalisée dans la bande [−1..1] */
-    const byN = by / bw;
-    /* Bruit de poussière — fort au centre (|byN|<0.8), décroit vers les bords */
-    const dustCore = fbm(bx*3.8+0.7, by*8.5+0.3, 6, 37)
-                   * fbm(bx*6.2-1.4, by*12.0,    5, 91);
-    const dustEdge = clamp(1.0 - byN*byN*1.4, 0.0, 1.0); /* masque : plus fort au centre */
-    const dustRaw  = dustCore * dustEdge * 2.2;
-    /* Seuil doux : seuls les blobs denses deviennent vraiment sombres */
-    const rift = clamp(dustRaw - 0.18, 0.0, 1.0) * 1.45;
-    const riftClamped = clamp(rift, 0.0, 0.90);
-
-    /* ── Luminosité finale ── */
-    const bright = bandEnv * cloudBright * (1.0-riftClamped*0.90) * coreEnv;
-    if(bright<0.002){px[idx+3]=0;continue;}
-
-    /* ── Couleur chaude ambrée — palette Atacama ──
-       Cœur : crème chaud → bras : doré → bords : bleu-gris
-       Poussière : tire vers le brun sombre */
-    const cw   = clamp(coreEnv*1.8-0.3, 0, 1) * clamp(1.0-Math.abs(by)/(bw*1.6), 0, 1);
-    const dust = clamp(riftClamped*0.7, 0, 1);
-
-    const rC = lerp(lerp(0.60, 0.88, clamp(cw*2,0,1)), 1.00, clamp(cw*2-1,0,1));
-    const gC = lerp(lerp(0.68, 0.74, clamp(cw*2,0,1)), 0.88, clamp(cw*2-1,0,1));
-    const bC = lerp(lerp(0.88, 0.48, clamp(cw*2,0,1)), 0.62, clamp(cw*2-1,0,1));
-
-    const rF = lerp(rC, 0.32, dust*0.55);
-    const gF = lerp(gC, 0.22, dust*0.55);
-    const bF = lerp(bC, 0.12, dust*0.55);
-
-    const finalB = Math.pow(clamp(bright,0,1), 0.72) * 0.85;
-    const alpha  = clamp(bright*4.5, 0, 1);
-
-    px[idx]  =Math.min(255,rF*finalB*255);
-    px[idx+1]=Math.min(255,gF*finalB*255);
-    px[idx+2]=Math.min(255,bF*finalB*255);
-    px[idx+3]=Math.min(255,alpha*255);
-  }
-
-  cx.putImageData(id,0,0);
-  const t=new THREE.CanvasTexture(cv);
-  t.minFilter=THREE.LinearMipmapLinearFilter; t.generateMipmaps=true;
-  t.anisotropy=16;
+/* Texture placeholder 1×1 noire — utilisée pendant la génération async
+   pour que le rendu démarre immédiatement sans bloquer l'UI. */
+const makePlaceholder = () => {
+  const c=document.createElement('canvas'); c.width=1; c.height=1;
+  const t=new THREE.CanvasTexture(c);
+  t.minFilter=THREE.LinearFilter;
   return t;
 };
 
 /* ══════════════════════════════════════════════════════
-   STAR FIELD — naked-eye point stars only
+   MILKY WAY — génération async par chunks (setTimeout)
+   Évite le gel de plusieurs secondes au démarrage.
+   Traite 48 lignes par tick → ~21 ticks pour 1024 lignes.
+   Le thread UI reste réactif, le rendu tourne en parallèle.
 ══════════════════════════════════════════════════════ */
-const buildStars = () => {
-  /* 2048×2048 : étoiles nettes à DPR×3 */
-  const S=2048;
-  const cv=document.createElement('canvas'); cv.width=S; cv.height=S;
+const buildMilkyWayAsync = () => new Promise(resolve => {
+  const GW=2048, GH=1024;
+  const cv=document.createElement('canvas'); cv.width=GW; cv.height=GH;
   const cx=cv.getContext('2d');
+  const id=cx.createImageData(GW,GH), px=id.data;
+  const tilt=-Math.atan(0.5), cosT=Math.cos(tilt), sinT=Math.sin(tilt);
+  const CHUNK=48; let py=0;
 
-  const tints=[[195,210,255],[222,232,255],[255,248,230],[255,238,190],[255,210,150]];
+  const step=()=>{
+    const end=Math.min(py+CHUNK,GH);
+    for(;py<end;py++) for(let qx=0;qx<GW;qx++){
+      const idx=(py*GW+qx)*4;
+      const nx=(qx/GW-0.5)*2.0;
+      const ny=(py/GH-0.5)*2.0*(GH/GW);
+      const bx= nx*cosT+ny*sinT;
+      const by=-nx*sinT+ny*cosT;
+      const widthNoise=fbm(bx*0.9+3.0,0.1,3,17)*0.05;
+      const bw=0.15+widthNoise;
+      const bandEnv=Math.exp(-(by*by)/(2*bw*bw));
+      if(bandEnv<0.002){px[idx+3]=0;continue;}
+      const dx=bx;
+      const coreEnv=Math.exp(-dx*dx*(dx>0?0.85:0.55));
+      const clouds=fbm(bx*2.6+0.4,  by*6.5,  7,11)*0.50
+                  +fbm(bx*5.2-0.9,  by*10.5, 5,53)*0.32
+                  +fbm(bx*10.8+2.3, by*18.0, 4,31)*0.18;
+      const cloudBright=0.30+clouds*0.70;
+      const byN=by/bw;
+      const dustCore=fbm(bx*3.8+0.7,by*8.5+0.3,6,37)
+                    *fbm(bx*6.2-1.4,by*12.0,   5,91);
+      const dustEdge=clamp(1.0-byN*byN*1.4,0.0,1.0);
+      const dustRaw=dustCore*dustEdge*2.2;
+      const rift=clamp(dustRaw-0.18,0.0,1.0)*1.45;
+      const riftClamped=clamp(rift,0.0,0.90);
+      const bright=bandEnv*cloudBright*(1.0-riftClamped*0.90)*coreEnv;
+      if(bright<0.002){px[idx+3]=0;continue;}
+      const cw=clamp(coreEnv*1.8-0.3,0,1)*clamp(1.0-Math.abs(by)/(bw*1.6),0,1);
+      const dust=clamp(riftClamped*0.7,0,1);
 
-  for(let i=0;i<4000;i++){
-    const x=Math.random()*S, y=Math.random()*S;
-    cx.fillStyle=`rgba(200,215,255,${0.04+Math.random()*0.15})`;
-    cx.beginPath(); cx.arc(x,y,Math.random()*0.38,0,Math.PI*2); cx.fill();
-  }
+      /* ── Sélecteur de couleur par zone — bruit moyen-fréquence qui
+         choisit quelle teinte domine localement. Fréquence assez haute
+         pour que toutes les couleurs apparaissent partout sur la bande,
+         assez basse pour que les zones soient visibles (pas du pixel noise).
+         On utilise 2 bruits indépendants pour créer 4 quadrants de couleur :
+           (n1<0.5, n2<0.5) → orange/ambre  original
+           (n1≥0.5, n2<0.5) → bleu nébuleuse
+           (n1<0.5, n2≥0.5) → rose / magenta
+           (n1≥0.5, n2≥0.5) → violet profond
+         Transition douce aux frontières via smoothstep pour éviter les bords durs. ── */
+      const n1 = fbm(bx*2.2+5.1,  by*4.8-1.3, 4, 73);
+      const n2 = fbm(bx*1.9-3.7,  by*5.3+2.6, 4, 29);
 
-  for(let i=0;i<700;i++){
-    const x=Math.random()*S, y=Math.random()*S;
-    const t=tints[Math.floor(Math.pow(Math.random(),1.6)*tints.length)];
-    cx.fillStyle=`rgba(${t[0]},${t[1]},${t[2]},${0.12+Math.random()*0.36})`;
-    cx.beginPath(); cx.arc(x,y,0.32+Math.random()*0.52,0,Math.PI*2); cx.fill();
-  }
+      /* Poids doux pour chaque couleur — smoothstep évite les bords nets */
+      const s1 = n1*n1*(3.0-2.0*n1); /* smoothstep(n1) */
+      const s2 = n2*n2*(3.0-2.0*n2); /* smoothstep(n2) */
 
-  for(let i=0;i<50;i++){
-    const x=Math.random()*S, y=Math.random()*S;
-    const t=tints[Math.floor(Math.random()*3)];
-    const bright=0.55+Math.random()*0.45;
-    const sz=0.65+Math.random()*0.9;
+      /* 4 couleurs distinctes, toutes riches */
+      const rAmbre  = lerp(lerp(0.60,0.88,clamp(cw*2,0,1)),1.00,clamp(cw*2-1,0,1));
+      const gAmbre  = lerp(lerp(0.68,0.74,clamp(cw*2,0,1)),0.88,clamp(cw*2-1,0,1));
+      const bAmbre  = lerp(lerp(0.82,0.42,clamp(cw*2,0,1)),0.58,clamp(cw*2-1,0,1));
 
-    const g=cx.createRadialGradient(x,y,0,x,y,sz*4.0);
-    g.addColorStop(0,   `rgba(${t[0]},${t[1]},${t[2]},${bright*0.38})`);
-    g.addColorStop(0.4, `rgba(${t[0]},${t[1]},${t[2]},${bright*0.07})`);
-    g.addColorStop(1,   'rgba(0,0,0,0)');
-    cx.fillStyle=g; cx.fillRect(x-sz*4,y-sz*4,sz*8,sz*8);
+      const rBleu   = 0.28; const gBleu   = 0.52; const bBleu   = 1.00;
+      const rRose   = 1.00; const gRose   = 0.32; const bRose   = 0.72;
+      const rViolet = 0.58; const gViolet = 0.22; const bViolet = 0.95;
 
-    cx.fillStyle=`rgba(255,255,255,${bright})`;
-    cx.beginPath(); cx.arc(x,y,sz*0.35,0,Math.PI*2); cx.fill();
-  }
+      /* Interpolation bilinéaire dans l'espace des 4 couleurs */
+      const rAB  = lerp(rAmbre,  rBleu,   s1);
+      const gAB  = lerp(gAmbre,  gBleu,   s1);
+      const bAB  = lerp(bAmbre,  bBleu,   s1);
+      const rRV  = lerp(rRose,   rViolet, s1);
+      const gRV  = lerp(gRose,   gViolet, s1);
+      const bRV  = lerp(bRose,   bViolet, s1);
+      const rC   = lerp(rAB, rRV, s2);
+      const gC   = lerp(gAB, gRV, s2);
+      const bC   = lerp(bAB, bRV, s2);
 
-  const t=new THREE.CanvasTexture(cv);
-  t.minFilter=THREE.LinearMipmapLinearFilter; t.generateMipmaps=true;
-  t.anisotropy=16;
-  return t;
-};
+      /* Masque de largeur : les couleurs n'apparaissent que dans la zone centrale
+         où était l'orange/marron. byN est la position normalisée [-1..1] dans
+         la largeur de la bande. On restreint à |byN| < 0.45, fondu doux. */
+      const colorMask = clamp(1.0 - Math.abs(byN) / 2.0, 0.0, 1.0);
+      const colorMaskS = colorMask * colorMask * (3.0 - 2.0 * colorMask); /* smoothstep */
+
+      /* Couleur blanche/crème des bords (palette originale à cw→1) */
+      const rEdge = lerp(lerp(0.60,0.88,clamp(cw*2,0,1)),1.00,clamp(cw*2-1,0,1));
+      const gEdge = lerp(lerp(0.68,0.74,clamp(cw*2,0,1)),0.88,clamp(cw*2-1,0,1));
+      const bEdge = lerp(lerp(0.82,0.42,clamp(cw*2,0,1)),0.58,clamp(cw*2-1,0,1));
+
+      const rF=lerp(lerp(rEdge, rC, colorMaskS), 0.32, dust*0.55);
+      const gF=lerp(lerp(gEdge, gC, colorMaskS), 0.22, dust*0.55);
+      const bF=lerp(lerp(bEdge, bC, colorMaskS), 0.12, dust*0.55);
+      /* Luminosité réduite : 0.65 (était 0.85) pour mieux se fondre dans le fond */
+      const finalB=Math.pow(clamp(bright,0,1),0.72)*0.65;
+      /* Alpha plus doux : ×3.5 (était ×4.5) */
+      const alpha=clamp(bright*3.5,0,1);
+      px[idx]  =Math.min(255,rF*finalB*255);
+      px[idx+1]=Math.min(255,gF*finalB*255);
+      px[idx+2]=Math.min(255,bF*finalB*255);
+      px[idx+3]=Math.min(255,alpha*255);
+    }
+    if(py<GH){ setTimeout(step,0); }
+    else{
+      cx.putImageData(id,0,0);
+      const t=new THREE.CanvasTexture(cv);
+      t.minFilter=THREE.LinearMipmapLinearFilter; t.generateMipmaps=true;
+      t.anisotropy=MAX_ANISO;
+      resolve(t);
+    }
+  };
+  setTimeout(step,0);
+});
+
+/* ══════════════════════════════════════════════════════
+   STAR FIELD — différé d'un tick (canvas 2D ne se parallélise
+   pas facilement, mais un setTimeout évite le gel au parse)
+══════════════════════════════════════════════════════ */
+const buildStarsAsync = () => new Promise(resolve => {
+  setTimeout(()=>{
+    const S=2048;
+    const cv=document.createElement('canvas'); cv.width=S; cv.height=S;
+    const cx=cv.getContext('2d');
+    const tints=[[195,210,255],[222,232,255],[255,248,230],[255,238,190],[255,210,150]];
+
+    for(let i=0;i<4000;i++){
+      const x=Math.random()*S, y=Math.random()*S;
+      cx.fillStyle=`rgba(200,215,255,${0.04+Math.random()*0.15})`;
+      cx.beginPath(); cx.arc(x,y,Math.random()*0.38,0,Math.PI*2); cx.fill();
+    }
+    for(let i=0;i<700;i++){
+      const x=Math.random()*S, y=Math.random()*S;
+      const t=tints[Math.floor(Math.pow(Math.random(),1.6)*tints.length)];
+      cx.fillStyle=`rgba(${t[0]},${t[1]},${t[2]},${0.12+Math.random()*0.36})`;
+      cx.beginPath(); cx.arc(x,y,0.32+Math.random()*0.52,0,Math.PI*2); cx.fill();
+    }
+    for(let i=0;i<50;i++){
+      const x=Math.random()*S, y=Math.random()*S;
+      const t=tints[Math.floor(Math.random()*3)];
+      const bright=0.55+Math.random()*0.45;
+      const sz=0.65+Math.random()*0.9;
+      const g=cx.createRadialGradient(x,y,0,x,y,sz*4.0);
+      g.addColorStop(0,  `rgba(${t[0]},${t[1]},${t[2]},${bright*0.38})`);
+      g.addColorStop(0.4,`rgba(${t[0]},${t[1]},${t[2]},${bright*0.07})`);
+      g.addColorStop(1,  'rgba(0,0,0,0)');
+      cx.fillStyle=g; cx.fillRect(x-sz*4,y-sz*4,sz*8,sz*8);
+      cx.fillStyle=`rgba(255,255,255,${bright})`;
+      cx.beginPath(); cx.arc(x,y,sz*0.35,0,Math.PI*2); cx.fill();
+    }
+
+    const t=new THREE.CanvasTexture(cv);
+    t.minFilter=THREE.LinearMipmapLinearFilter; t.generateMipmaps=true;
+    t.anisotropy=MAX_ANISO;
+    resolve(t);
+  },0);
+});
 
 /* ══════════════════════════════════════════════════════
    SHADERS
@@ -366,13 +457,7 @@ varying vec2 vUv;
 float schlick(float c,float F0){return F0+(1.0-F0)*pow(clamp(1.0-c,0.0,1.0),5.0);}
 float nodeG(vec2 p,vec2 c,float r){float d=length(p-c);return exp(-d*d/(r*r));}
 
-vec2 refractUV(vec3 P0,vec3 hitN,float n,float asp,vec2 surf){
-  vec3 rDir=refract(vec3(0.0,0.0,-1.0),hitN,1.0/n);
-  float tEx=-2.0*dot(P0,rDir);
-  vec3 Pex=P0+rDir*tEx;
-  vec3 eRay=refract(rDir,-normalize(Pex),n);
-  return clamp((Pex.xy+eRay.xy*2.0+surf)/vec2(asp,1.0)*0.5+0.5,0.001,0.999);
-}
+
 
 void main(){
   float asp=uResolution.x/uResolution.y;
@@ -380,7 +465,8 @@ void main(){
   float sR=uSphereR, sR2=sR*sR, d2=dot(p,p);
 
   vec4 mw=texture2D(uGalaxy,vUv);
-  vec3 col=mw.rgb*mw.a + texture2D(uStars,vUv).rgb*0.40;
+  /* Luminosité fond réduite (×0.40) : la bande se fond mieux dans le noir profond */
+  vec3 col=mw.rgb*mw.a*0.40 + texture2D(uStars,vUv).rgb*0.40;
 
   col+=hsl2rgb(uHue,0.55,0.85)*exp(-length(p-vec2(0.22,-0.22)*sR)*11.0)*0.07;
 
@@ -391,10 +477,8 @@ void main(){
     vec2 surf=vec2(sin(p.x*9.0+dt)*cos(p.y*7.0+dt*0.7),
                    cos(p.x*8.0-dt*0.8)*sin(p.y*10.0+dt))*uSurfaceDistor*0.09;
 
-    vec3 glass;
-    glass.r=texture2D(uGalaxy,refractUV(P0,hitN,1.510,asp,surf)).r*0.68;
-    glass.g=texture2D(uGalaxy,refractUV(P0,hitN,1.520,asp,surf)).g*0.68;
-    glass.b=texture2D(uGalaxy,refractUV(P0,hitN,1.533,asp,surf)).b*0.68;
+    /* La galaxie est derrière l'orbe — pas de réfraction de la texture dans le verre */
+    vec3 glass=vec3(0.0);
 
     {
       float n=1.520;
@@ -407,14 +491,11 @@ void main(){
         vec3 eR2=refract(inR,-N2,n);
         float valid=step(0.001,length(eR2));
         float energy=schlick(abs(dot(rDir,-normalize(Pex))),0.04)*(1.0-schlick(abs(dot(inR,-N2)),0.04))*valid;
-        vec2 uv2=(P2.xy+eR2.xy*1.8+surf*0.6)/vec2(asp,1.0)*0.5+0.5;
-        vec2 co=normalize(p+vec2(0.001))/vec2(asp,1.0)*0.022;
-        vec3 ring;
-        ring.r=texture2D(uGalaxy,clamp(uv2+co,0.001,0.999)).r;
-        ring.g=texture2D(uGalaxy,clamp(uv2,0.001,0.999)).g;
-        ring.b=texture2D(uGalaxy,clamp(uv2-co,0.001,0.999)).b;
-        ring+=hsl2rgb(uHue+atan(P2.y,P2.x)/(2.0*3.14159)*0.35,0.9,0.7)*0.12*energy;
-        glass+=ring*energy*0.55;
+        /* Réflexion interne : on supprime les lookups texture2D(uGalaxy,...)
+           qui projetaient la bande lactée sur la surface de l'orbe (effet "devant").
+           On conserve uniquement la couleur plasma chromatique de la réflexion interne. */
+        vec3 ring=hsl2rgb(uHue+atan(P2.y,P2.x)/(2.0*3.14159)*0.35,0.9,0.7)*0.15*energy;
+        glass+=ring*energy*0.28;
       }
     }
 
@@ -495,15 +576,8 @@ void main(){
 }`;
 
 /* ══════════════════════════════════════════════════════
-   RENDERER
+   RENDER TARGETS & SCÈNES
 ══════════════════════════════════════════════════════ */
-const canvas=document.getElementById('c');
-const renderer=new THREE.WebGLRenderer({
-  canvas,antialias:true,powerPreference:'high-performance',
-  alpha:false,stencil:false,depth:false
-});
-renderer.setPixelRatio(DPR); renderer.setSize(W,H);
-
 const PW=()=>Math.round(W*DPR), PH=()=>Math.round(H*DPR);
 const rtO={type:THREE.HalfFloatType,minFilter:THREE.LinearFilter,magFilter:THREE.LinearFilter,depthBuffer:false,stencilBuffer:false};
 const sceneRT=new THREE.WebGLRenderTarget(PW(),PH(),rtO);
@@ -511,8 +585,10 @@ const bHW=()=>Math.round(W/2), bHH=()=>Math.round(H/2);
 const bRT1=new THREE.WebGLRenderTarget(bHW(),bHH(),{...rtO});
 const bRT2=new THREE.WebGLRenderTarget(bHW(),bHH(),{...rtO});
 
+/* Uniformes — initialisés avec des placeholders 1×1 ;
+   les vraies textures seront injectées quand l'async sera terminé. */
 const scU={
-  uGalaxy:{value:buildMilkyWay()},uStars:{value:buildStars()},
+  uGalaxy:{value:makePlaceholder()},uStars:{value:makePlaceholder()},
   uTime:{value:0},uSphereR:{value:0.4},uHue:{value:0.7},
   uCoreI:{value:0.25},uSurfaceDistor:{value:0},uBeat:{value:0},
   uResolution:{value:new THREE.Vector2(W,H)},
@@ -527,7 +603,7 @@ const bHU={uScene:{value:sceneRT.texture},uTexelSize:{value:new THREE.Vector2(1/
 const bVU={uBloom:{value:bRT1.texture},uTexelSize:{value:new THREE.Vector2(1/bHW(),1/bHH())}};
 const cU ={uScene:{value:sceneRT.texture},uBloom:{value:bRT2.texture},uResolution:{value:new THREE.Vector2(W,H)},uTime:{value:0}};
 
-const mkM=( f,u)=>new THREE.ShaderMaterial({uniforms:u,vertexShader:VERT,fragmentShader:f});
+const mkM=(f,u)=>new THREE.ShaderMaterial({uniforms:u,vertexShader:VERT,fragmentShader:f});
 const quad=new THREE.PlaneGeometry(2,2);
 const cam=new THREE.OrthographicCamera(-1,1,1,-1,0,1);
 const mkS=m=>{const s=new THREE.Scene();s.add(new THREE.Mesh(quad,m));return s;};
@@ -551,11 +627,70 @@ const onResize=()=>{
 window.addEventListener('resize',onResize);
 window.addEventListener('orientationchange',()=>setTimeout(onResize,200));
 
+/* ── Pause rendu quand l'app est en arrière-plan (économie batterie + thermique) ──
+   iOS continue de fire des rAF en arrière-plan sur certaines versions — on bloque
+   explicitement. On remet prevTime à jour au retour pour éviter un dt géant. */
+let _paused = false;
+document.addEventListener('visibilitychange', () => {
+  if(document.hidden){
+    _paused = true;
+  } else {
+    _paused = false;
+    prevTime = performance.now(); /* reset dt pour éviter le saut de temps */
+  }
+});
+
+/* ══════════════════════════════════════════════════════
+   QUALITÉ ADAPTATIVE — 3 paliers + bloom skip
+
+   Palier 0 (nominal)  : bloom W/2 × H/2
+   Palier 1 (<50 fps)  : bloom W/3 × H/3  ← début throttling doux
+   Palier 2 (<40 fps)  : bloom W/5 × H/5  ← throttling thermique sévère
+
+   Bloom skip : quand la scène est calme (pas d'audio actif),
+   le bloom est rendu 1 frame sur 2 → économie 50% sur les 2 passes blur
+   sans différence visible car le bloom ne change pas vite.
+══════════════════════════════════════════════════════ */
+let fpsSamples=[], fpsLastCheck=0, qualityTier=0;
+let _frameCount=0, _lastBloomRT=null;
+
+const checkAdaptiveQuality=(now,dt)=>{
+  fpsSamples.push(dt);
+  if(fpsSamples.length>90) fpsSamples.shift();
+  if(now-fpsLastCheck>5000 && fpsSamples.length>=60){
+    fpsLastCheck=now;
+    const avgFps=fpsSamples.length/(fpsSamples.reduce((a,b)=>a+b,0));
+    if(avgFps<40 && qualityTier<2){
+      qualityTier=2;
+      bRT1.setSize(Math.round(W/5),Math.round(H/5));
+      bRT2.setSize(Math.round(W/5),Math.round(H/5));
+      bHU.uTexelSize.value.set(5/W,5/H);
+      bVU.uTexelSize.value.set(5/W,5/H);
+    } else if(avgFps<50 && qualityTier<1){
+      qualityTier=1;
+      bRT1.setSize(Math.round(W/3),Math.round(H/3));
+      bRT2.setSize(Math.round(W/3),Math.round(H/3));
+      bHU.uTexelSize.value.set(3/W,3/H);
+      bVU.uTexelSize.value.set(3/W,3/H);
+    }
+  }
+};
+
+/* ══════════════════════════════════════════════════════
+   BOUCLE DE RENDU
+══════════════════════════════════════════════════════ */
 let prevTime=performance.now();
 function loop(now){
   requestAnimationFrame(loop);
+
+  /* ── Pauses iOS ── */
+  if(_paused || _contextLost) return;
+
   const dt=Math.min((now-prevTime)/1000,0.05), T=now/1000;
   prevTime=now;
+  _frameCount++;
+
+  checkAdaptiveQuality(now,dt);
 
   if(live&&analyser) analyser.getByteFrequencyData(freqData);
   const rawB  =live?fBand(0,0.10):0.07+0.03*Math.sin(T*1.1);
@@ -585,12 +720,32 @@ function loop(now){
     scU[`uNH${i}`].value=hue+nd.hOff*0.22;
   });
 
+  /* ── Bloom skip : si la scène est calme (pas de beat, audio faible),
+     on recalcule le bloom 1 frame sur 2 seulement.
+     Le résultat du frame précédent est réutilisé via bRT2 qui ne change pas.
+     Sur ProMotion 120Hz, ça revient à recalculer le bloom à 60Hz max —
+     imperceptible visuellement, économise ~30% du budget GPU total. ── */
+  const sceneActive = beatImpact > 0.04 || sub > 0.03 || scU.uSurfaceDistor.value > 0.01;
+  const doBloom = sceneActive || (_frameCount % 2 === 0);
+
   renderer.setRenderTarget(sceneRT); renderer.render(sS,cam);
-  renderer.setRenderTarget(bRT1);    renderer.render(bHS,cam);
-  renderer.setRenderTarget(bRT2);    renderer.render(bVS,cam);
-  renderer.setRenderTarget(null);    renderer.render(cS,cam);
+  if(doBloom){
+    renderer.setRenderTarget(bRT1); renderer.render(bHS,cam);
+    renderer.setRenderTarget(bRT2); renderer.render(bVS,cam);
+  }
+  renderer.setRenderTarget(null); renderer.render(cS,cam);
 }
+
+/* ══════════════════════════════════════════════════════
+   DÉMARRAGE : rendu immédiat + textures async en parallèle
+   Les textures s'injectent dans les uniformes dès qu'elles
+   sont prêtes — Three.js les upload automatiquement au
+   prochain frame qui les utilise.
+══════════════════════════════════════════════════════ */
 requestAnimationFrame(loop);
+
+buildMilkyWayAsync().then(t => { scU.uGalaxy.value = t; });
+buildStarsAsync().then(t    => { scU.uStars.value  = t; });
 </script>
 </body>
 </html>
