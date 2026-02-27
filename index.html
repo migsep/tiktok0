@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>Orbe de Verre Cinématique — MAX</title>
+<title>Orbe de Verre Cinématique — HQ</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Didact+Gothic&family=EB+Garamond:ital,wght@0,400;1,300&display=swap');
 *{margin:0;padding:0;box-sizing:border-box}
@@ -44,7 +44,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#000;cursor:none;
 <canvas id="c"></canvas>
 <div id="media-container"></div>
 <div id="hint">2× tap — contrôles</div>
-<div id="quality-badge" id="qb">MAX</div>
+<div id="quality-badge" id="qb">DPR·3 · MSAA·4×</div>
 <div id="ui">
   <button class="btn" id="micBtn">Micro</button>
   <button class="btn" id="fileBtn">Charger audio</button>
@@ -260,14 +260,13 @@ const makePlaceholder = () => {
   const t=new THREE.CanvasTexture(c); t.minFilter=THREE.LinearFilter; return t;
 };
 
-/* ─── GALAXY 4096×2048 ─────────────────────────────────────────────────────── */
 const buildMilkyWayAsync = () => new Promise(resolve => {
-  const GW=4096, GH=2048;
+  const GW=2048, GH=1024;
   const cv=document.createElement('canvas'); cv.width=GW; cv.height=GH;
   const cx=cv.getContext('2d');
   const id=cx.createImageData(GW,GH), px=id.data;
   const tilt=-Math.atan(0.5), cosT=Math.cos(tilt), sinT=Math.sin(tilt);
-  const CHUNK=32; let py=0;  // chunk réduit car 4× plus de pixels
+  const CHUNK=48; let py=0;
 
   const step=()=>{
     const end=Math.min(py+CHUNK,GH);
@@ -346,10 +345,9 @@ const buildMilkyWayAsync = () => new Promise(resolve => {
   setTimeout(step,0);
 });
 
-/* ─── STARS 4096×4096 ───────────────────────────────────────────────────────── */
 const buildStarsAsync = () => new Promise(resolve => {
   setTimeout(()=>{
-    const S=4096;
+    const S=2048;
     const cv=document.createElement('canvas'); cv.width=S; cv.height=S;
     const cx=cv.getContext('2d');
     const tints=[[195,210,255],[222,232,255],[255,248,230],[255,238,190],[255,210,150]];
@@ -396,7 +394,6 @@ vec3 hsl2rgb(float h,float s,float l){
   return vec3(r,g,b);
 }`;
 
-/* ─── SCENE SHADER — gfbm 6 octaves ─────────────────────────────────────────── */
 const SCENE_FRAG=`
 precision highp float;
 ${HSL_FN}
@@ -420,15 +417,9 @@ float gnoise(vec2 p){
   return mix(mix(ghash(i),ghash(i+vec2(1,0)),u.x),
              mix(ghash(i+vec2(0,1)),ghash(i+vec2(1,1)),u.x),u.y)*2.0-1.0;
 }
-
-/* 6 octaves — détail de surface fin */
 float gfbm(vec2 p){
-  return gnoise(p)          * 0.500
-        +gnoise(p*2.03+1.31)* 0.250
-        +gnoise(p*4.11-0.72)* 0.125
-        +gnoise(p*8.27+3.14)* 0.0625
-        +gnoise(p*16.71-1.88)*0.03125
-        +gnoise(p*33.45+5.27)*0.015625;
+  return gnoise(p)*0.500+gnoise(p*2.03+1.31)*0.250
+        +gnoise(p*4.11-0.72)*0.125+gnoise(p*8.27+3.14)*0.063;
 }
 
 void main(){
@@ -450,7 +441,6 @@ void main(){
     vec3 glass=vec3(0.0);
 
     vec2 surfUV = hitN.xy * 3.8 + hitN.yz * 2.6;
-    /* bump mapping 6 octaves — micro-détail riche */
     float bumpX = gfbm(surfUV + vec2(uTime*0.07, 0.0)) * 0.048;
     float bumpY = gfbm(surfUV + vec2(0.0, uTime*0.055) + 1.73) * 0.048;
     vec3 microN  = normalize(hitN + vec3(bumpX, bumpY, 0.0));
@@ -498,7 +488,6 @@ void main(){
 }
 `;
 
-/* ─── BLOOM PASSES (réutilisables H et V) ────────────────────────────────────── */
 const BLOOM_H_FRAG=`
 precision highp float;
 uniform sampler2D uScene; uniform vec2 uTexelSize; varying vec2 vUv;
@@ -521,7 +510,6 @@ void main(){
   gl_FragColor=vec4(a*0.028+b*0.067+c*0.124+d*0.179+e*0.204+f*0.179+g*0.124+h*0.067+k*0.028,1.0);
 }`;
 
-/* Pass V — utilisé pour les deux passes bloom (texture source variable) */
 const BLOOM_V_FRAG=`
 precision highp float;
 uniform sampler2D uBloom; uniform vec2 uTexelSize; varying vec2 vUv;
@@ -539,75 +527,24 @@ void main(){
   gl_FragColor=vec4(a*0.028+b*0.067+c*0.124+d*0.179+e*0.204+f*0.179+g*0.124+h*0.067+k*0.028,1.0);
 }`;
 
-/* Second pass H bloom — lit depuis bRT2 (V1) au lieu de la scène */
-const BLOOM_H2_FRAG=`
-precision highp float;
-uniform sampler2D uScene; uniform vec2 uTexelSize; varying vec2 vUv;
-void main(){
-  float ox=uTexelSize.x;
-  vec3 a=texture2D(uScene,clamp(vUv+vec2(-4.0*ox,0.0),0.001,0.999)).rgb;
-  vec3 b=texture2D(uScene,clamp(vUv+vec2(-3.0*ox,0.0),0.001,0.999)).rgb;
-  vec3 c=texture2D(uScene,clamp(vUv+vec2(-2.0*ox,0.0),0.001,0.999)).rgb;
-  vec3 d=texture2D(uScene,clamp(vUv+vec2(-1.0*ox,0.0),0.001,0.999)).rgb;
-  vec3 e=texture2D(uScene,vUv).rgb;
-  vec3 f=texture2D(uScene,clamp(vUv+vec2(1.0*ox,0.0),0.001,0.999)).rgb;
-  vec3 g=texture2D(uScene,clamp(vUv+vec2(2.0*ox,0.0),0.001,0.999)).rgb;
-  vec3 h=texture2D(uScene,clamp(vUv+vec2(3.0*ox,0.0),0.001,0.999)).rgb;
-  vec3 k=texture2D(uScene,clamp(vUv+vec2(4.0*ox,0.0),0.001,0.999)).rgb;
-  gl_FragColor=vec4(a*0.028+b*0.067+c*0.124+d*0.179+e*0.204+f*0.179+g*0.124+h*0.067+k*0.028,1.0);
-}`;
-
-/* ─── COMPOSITE + ACES + vignette + CAS sharpening ─────────────────────────── */
 const COMP_FRAG=`
 precision highp float;
-uniform sampler2D uScene,uBloom1,uBloom2;
-uniform vec2 uResolution;
-uniform float uTime;
+uniform sampler2D uScene,uBloom; uniform vec2 uResolution; uniform float uTime;
 varying vec2 vUv;
-
 vec3 aces(vec3 x){return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14),0.0,1.0);}
-
-/* Contrast Adaptive Sharpening (simplifié) */
-vec3 cas(sampler2D tex, vec2 uv, vec2 ts, float sharpness){
-  vec3 a=texture2D(tex,uv+vec2(-ts.x,-ts.y)).rgb;
-  vec3 b=texture2D(tex,uv+vec2( 0.0, -ts.y)).rgb;
-  vec3 c=texture2D(tex,uv+vec2( ts.x,-ts.y)).rgb;
-  vec3 d=texture2D(tex,uv+vec2(-ts.x,  0.0)).rgb;
-  vec3 e=texture2D(tex,uv).rgb;
-  vec3 f=texture2D(tex,uv+vec2( ts.x,  0.0)).rgb;
-  vec3 g=texture2D(tex,uv+vec2(-ts.x, ts.y)).rgb;
-  vec3 h=texture2D(tex,uv+vec2( 0.0,  ts.y)).rgb;
-  vec3 k=texture2D(tex,uv+vec2( ts.x, ts.y)).rgb;
-  vec3 mnRGB=min(min(min(d,e),min(f,b)),h);
-  vec3 mxRGB=max(max(max(d,e),max(f,b)),h);
-  vec3 w=vec3(-1.0)/sqrt(clamp(0.5*(mxRGB+mnRGB),0.0001,1.0))*(sharpness*(-2.0)-2.0);
-  vec3 rcp_w=vec3(1.0)/(4.0*w+vec3(1.0));
-  return clamp((w*(b+d+f+h)+e)*rcp_w,0.0,1.0);
-}
-
 void main(){
-  /* double bloom : tight (bRT2) + large (bRT4) */
-  vec3 bloom=texture2D(uBloom1,vUv).rgb*0.70 + texture2D(uBloom2,vUv).rgb*0.55;
-
-  vec2 ts=vec2(1.0/uResolution.x, 1.0/uResolution.y);
-  /* CAS appliqué sur la scène avant composite bloom */
-  vec3 scene=cas(uScene, vUv, ts, 0.68);
-
-  vec3 ldr=pow(aces((scene+bloom)*0.92),vec3(1.0/2.2));
-
-  /* vignette */
+  vec3 scene=texture2D(uScene,vUv).rgb;
+  vec3 bloom=texture2D(uBloom,vUv).rgb;
+  vec3 ldr=pow(aces((scene+bloom*1.00)*0.92),vec3(1.0/2.2));
   vec2 uv2=vUv*(1.0-vUv.yx);
   ldr*=mix(0.82,1.0,pow(uv2.x*uv2.y*15.0,0.18));
-
   gl_FragColor=vec4(ldr,1.0);
 }`;
 
-/* ─── Dimensions RT ──────────────────────────────────────────────────────────── */
 const PW=()=>Math.round(W*currentDPR);
 const PH=()=>Math.round(H*currentDPR);
-/* bloom à 3/4 de la résolution plein écran */
-const bW=()=>Math.round(W*currentDPR*3/4);
-const bH=()=>Math.round(H*currentDPR*3/4);
+const bW=()=>Math.round(W*2/3);
+const bH=()=>Math.round(H*2/3);
 
 const rtO={
   type:THREE.HalfFloatType,
@@ -626,11 +563,8 @@ if(MSAA_SAMPLES > 0) {
   sceneRT = new THREE.WebGLRenderTarget(PW(), PH(), rtO);
 }
 
-/* 4 render targets bloom : 2 passes H+V */
-const bRT1=new THREE.WebGLRenderTarget(bW(), bH(), {...rtO}); // pass1 H
-const bRT2=new THREE.WebGLRenderTarget(bW(), bH(), {...rtO}); // pass1 V  → bloom tight
-const bRT3=new THREE.WebGLRenderTarget(bW(), bH(), {...rtO}); // pass2 H
-const bRT4=new THREE.WebGLRenderTarget(bW(), bH(), {...rtO}); // pass2 V  → bloom large
+const bRT1=new THREE.WebGLRenderTarget(bW(), bH(), {...rtO});
+const bRT2=new THREE.WebGLRenderTarget(bW(), bH(), {...rtO});
 
 const scU={
   uGalaxy:{value:makePlaceholder()},uStars:{value:makePlaceholder()},
@@ -644,35 +578,17 @@ const scU={
   uNH0:{value:0},uNH1:{value:0},uNH2:{value:0},uNH3:{value:0},
   uNH4:{value:0},uNH5:{value:0},uNH6:{value:0}
 };
-
-/* pass1 H — seuillage depuis la scène */
-const bHU ={uScene:{value:sceneRT.texture}, uTexelSize:{value:new THREE.Vector2(1/bW(),1/bH())}};
-/* pass1 V */
-const bVU ={uBloom:{value:bRT1.texture},    uTexelSize:{value:new THREE.Vector2(1/bW(),1/bH())}};
-/* pass2 H — lit bRT2 (V1), pas de seuillage */
-const bH2U={uScene:{value:bRT2.texture},    uTexelSize:{value:new THREE.Vector2(1/bW(),1/bH())}};
-/* pass2 V */
-const bV2U={uBloom:{value:bRT3.texture},    uTexelSize:{value:new THREE.Vector2(1/bW(),1/bH())}};
-
-const cU={
-  uScene: {value:sceneRT.texture},
-  uBloom1:{value:bRT2.texture},
-  uBloom2:{value:bRT4.texture},
-  uResolution:{value:new THREE.Vector2(W,H)},
-  uTime:{value:0}
-};
+const bHU={uScene:{value:sceneRT.texture},uTexelSize:{value:new THREE.Vector2(1/bW(),1/bH())}};
+const bVU={uBloom:{value:bRT1.texture},uTexelSize:{value:new THREE.Vector2(1/bW(),1/bH())}};
+const cU ={uScene:{value:sceneRT.texture},uBloom:{value:bRT2.texture},
+           uResolution:{value:new THREE.Vector2(W,H)},uTime:{value:0}};
 
 const mkM=(f,u)=>new THREE.ShaderMaterial({uniforms:u,vertexShader:VERT,fragmentShader:f});
 const quad=new THREE.PlaneGeometry(2,2);
 const cam=new THREE.OrthographicCamera(-1,1,1,-1,0,1);
 const mkS=m=>{const s=new THREE.Scene();s.add(new THREE.Mesh(quad,m));return s;};
-
-const sS  = mkS(mkM(SCENE_FRAG,  scU));
-const bHS  = mkS(mkM(BLOOM_H_FRAG,bHU));
-const bVS  = mkS(mkM(BLOOM_V_FRAG,bVU));
-const bH2S = mkS(mkM(BLOOM_H2_FRAG,bH2U));
-const bV2S = mkS(mkM(BLOOM_V_FRAG,bV2U));
-const cS   = mkS(mkM(COMP_FRAG,  cU));
+const sS=mkS(mkM(SCENE_FRAG,scU)), bHS=mkS(mkM(BLOOM_H_FRAG,bHU));
+const bVS=mkS(mkM(BLOOM_V_FRAG,bVU)), cS=mkS(mkM(COMP_FRAG,cU));
 
 const nodes=Array.from({length:7},(_,i)=>({
   orbit:0.14+Math.random()*0.36,angle:Math.random()*Math.PI*2,
@@ -686,13 +602,9 @@ const onResize=()=>{
   renderer.setPixelRatio(currentDPR); renderer.setSize(W,H);
   sceneRT.setSize(PW(),PH());
   bRT1.setSize(bW(),bH()); bRT2.setSize(bW(),bH());
-  bRT3.setSize(bW(),bH()); bRT4.setSize(bW(),bH());
   scU.uResolution.value.set(W,H); cU.uResolution.value.set(W,H);
-  const texSz=new THREE.Vector2(1/bW(),1/bH());
-  bHU.uTexelSize.value.copy(texSz);
-  bVU.uTexelSize.value.copy(texSz);
-  bH2U.uTexelSize.value.copy(texSz);
-  bV2U.uTexelSize.value.copy(texSz);
+  bHU.uTexelSize.value.set(1/bW(),1/bH());
+  bVU.uTexelSize.value.set(1/bW(),1/bH());
 };
 window.addEventListener('resize',onResize);
 window.addEventListener('orientationchange',()=>setTimeout(onResize,200));
@@ -704,18 +616,56 @@ document.addEventListener('visibilitychange', () => {
   else { _paused = false; prevTime = performance.now(); }
 });
 
-/* ─── Adaptive quality DÉSACTIVÉ (enregistrement 1 min) ─────────────────────── */
-/* QUALITY_CHECK_INTERVAL à 600 000 ms = 10 min → ne se déclenche jamais */
-const QUALITY_CHECK_INTERVAL = 600000;
 let qualityTier = 0;
 let fpsWindow = [];
 let fpsLastCheck = 0;
+const QUALITY_CHECK_INTERVAL = 8000;
+const qBadge = document.getElementById('quality-badge');
+
+const updateQualityBadge = () => {
+  const dprStr = `DPR·${currentDPR % 1 === 0 ? currentDPR : currentDPR.toFixed(1)}`;
+  const msaaStr = MSAA_SAMPLES > 0 ? `MSAA·${MSAA_SAMPLES}×` : 'MSAA·off';
+  const tierStr = qualityTier > 0 ? ` · T${qualityTier}` : '';
+  qBadge.textContent = `${dprStr} · ${msaaStr}${tierStr}`;
+};
+updateQualityBadge();
+
+const applyQualityTier = (tier) => {
+  qualityTier = tier;
+  let newDPR, bScale;
+  switch(tier){
+    case 0: newDPR=NATIVE_DPR; bScale=2/3; break;
+    case 1: newDPR=NATIVE_DPR; bScale=1/2; break;
+    case 2: newDPR=Math.min(NATIVE_DPR,2); bScale=1/3; break;
+    default: newDPR=1.5; bScale=1/4; break;
+  }
+  if(newDPR !== currentDPR){
+    currentDPR = newDPR;
+    renderer.setPixelRatio(currentDPR);
+    sceneRT.setSize(PW(), PH());
+  }
+  const bwN = Math.round(W*bScale), bhN = Math.round(H*bScale);
+  bRT1.setSize(bwN, bhN); bRT2.setSize(bwN, bhN);
+  bHU.uTexelSize.value.set(1/bwN, 1/bhN);
+  bVU.uTexelSize.value.set(1/bwN, 1/bhN);
+  updateQualityBadge();
+};
 
 const checkAdaptiveQuality = (now, dt) => {
-  /* délibérément inactif — qualité max maintenue */
+  if(now < 12000) return;
+  fpsWindow.push(dt);
+  if(fpsWindow.length > 120) fpsWindow.shift();
+  if(now - fpsLastCheck < QUALITY_CHECK_INTERVAL) return;
+  fpsLastCheck = now;
+  if(fpsWindow.length < 60) return;
+  const avgFps = fpsWindow.length / fpsWindow.reduce((a,b)=>a+b,0);
+  if(avgFps < 35 && qualityTier < 3) applyQualityTier(3);
+  else if(avgFps < 45 && qualityTier < 2) applyQualityTier(2);
+  else if(avgFps < 55 && qualityTier < 1) applyQualityTier(1);
 };
 
 let _frameCount = 0;
+let _avgFpsBloom = 60;
 
 function loop(now){
   requestAnimationFrame(loop);
@@ -725,6 +675,8 @@ function loop(now){
   const T  = now/1000;
   prevTime = now;
   _frameCount++;
+
+  _avgFpsBloom = lerp(_avgFpsBloom, 1/Math.max(dt,0.001), 0.05);
 
   checkAdaptiveQuality(now, dt);
 
@@ -757,19 +709,16 @@ function loop(now){
     scU[`uNH${i}`].value=hue+nd.hOff*0.22;
   });
 
-  /* ─── pipeline de rendu ───────────────────────────────────────────────────── */
-  renderer.setRenderTarget(sceneRT);  renderer.render(sS,  cam);
+  const sceneVeryCalm = beatImpact < 0.01 && sub < 0.01 && scU.uSurfaceDistor.value < 0.003;
+  const gpuComfortable = _avgFpsBloom > 100;
+  const doBloom = !(sceneVeryCalm && gpuComfortable && (_frameCount % 2 === 1));
 
-  /* bloom pass 1 — tight */
-  renderer.setRenderTarget(bRT1);     renderer.render(bHS, cam);
-  renderer.setRenderTarget(bRT2);     renderer.render(bVS, cam);
-
-  /* bloom pass 2 — large (floute le bloom tight) */
-  renderer.setRenderTarget(bRT3);     renderer.render(bH2S,cam);
-  renderer.setRenderTarget(bRT4);     renderer.render(bV2S,cam);
-
-  /* composite final + CAS */
-  renderer.setRenderTarget(null);     renderer.render(cS,  cam);
+  renderer.setRenderTarget(sceneRT); renderer.render(sS, cam);
+  if(doBloom){
+    renderer.setRenderTarget(bRT1); renderer.render(bHS, cam);
+    renderer.setRenderTarget(bRT2); renderer.render(bVS, cam);
+  }
+  renderer.setRenderTarget(null); renderer.render(cS, cam);
 }
 
 requestAnimationFrame(loop);
