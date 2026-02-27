@@ -294,10 +294,21 @@ const buildMilkyWayAsync = () => new Promise(resolve => {
       const by=-nx*sinT+ny*cosT;
       const widthNoise=fbm(bx*0.9+3.0,0.1,3,17)*0.05;
       const bw=0.15+widthNoise;
-      const bandEnv=Math.exp(-(by*by)/(2*bw*bw));
-      if(bandEnv<0.002){px[idx+3]=0;continue;}
+
+      /* ── Bords effilochés : on module l'enveloppe gaussienne par un fbm
+         de bord — basse fréquence sur bx, haute sur by → filaments irréguliers
+         qui s'échappent, comme une vraie voie lactée photographiée. ── */
+      const edgeFray = fbm(bx*3.5+1.2, by*8.0-0.7, 4, 61) * 0.55 + 0.45;
+      const bandEnv  = Math.exp(-(by*by)/(2*bw*bw)) * edgeFray;
+      if(bandEnv<0.003){px[idx+3]=0;continue;}
+
       const dx=bx;
       const coreEnv=Math.exp(-dx*dx*(dx>0?0.85:0.55));
+
+      /* ── Variations de densité longitudinale — nœuds brillants + zones creuses ──
+         fbm très basse fréquence sur bx seul → larges zones plus ou moins denses
+         comme sur une vraie photo grand champ. Range [0.35..1.0]. ── */
+      const densityEnv = 0.35 + 0.65 * fbm(bx*0.6+0.3, 0.0, 3, 43);
       const clouds=fbm(bx*2.6+0.4,  by*6.5,  7,11)*0.50
                   +fbm(bx*5.2-0.9,  by*10.5, 5,53)*0.32
                   +fbm(bx*10.8+2.3, by*18.0, 4,31)*0.18;
@@ -309,55 +320,42 @@ const buildMilkyWayAsync = () => new Promise(resolve => {
       const dustRaw=dustCore*dustEdge*2.2;
       const rift=clamp(dustRaw-0.18,0.0,1.0)*1.45;
       const riftClamped=clamp(rift,0.0,0.90);
-      const bright=bandEnv*cloudBright*(1.0-riftClamped*0.90)*coreEnv;
+      const bright=bandEnv*cloudBright*(1.0-riftClamped*0.90)*coreEnv*densityEnv;
       if(bright<0.002){px[idx+3]=0;continue;}
       const cw=clamp(coreEnv*1.8-0.3,0,1)*clamp(1.0-Math.abs(by)/(bw*1.6),0,1);
       const dust=clamp(riftClamped*0.7,0,1);
 
-      /* ── Sélecteur de couleur par zone — bruit moyen-fréquence qui
-         choisit quelle teinte domine localement. Fréquence assez haute
-         pour que toutes les couleurs apparaissent partout sur la bande,
-         assez basse pour que les zones soient visibles (pas du pixel noise).
-         On utilise 2 bruits indépendants pour créer 4 quadrants de couleur :
-           (n1<0.5, n2<0.5) → orange/ambre  original
-           (n1≥0.5, n2<0.5) → bleu nébuleuse
-           (n1<0.5, n2≥0.5) → rose / magenta
-           (n1≥0.5, n2≥0.5) → violet profond
-         Transition douce aux frontières via smoothstep pour éviter les bords durs. ── */
+      /* ── Sélecteur de couleur par zone ── */
       const n1 = fbm(bx*2.2+5.1,  by*4.8-1.3, 4, 73);
       const n2 = fbm(bx*1.9-3.7,  by*5.3+2.6, 4, 29);
+      const s1 = n1*n1*(3.0-2.0*n1);
+      const s2 = n2*n2*(3.0-2.0*n2);
 
-      /* Poids doux pour chaque couleur — smoothstep évite les bords nets */
-      const s1 = n1*n1*(3.0-2.0*n1); /* smoothstep(n1) */
-      const s2 = n2*n2*(3.0-2.0*n2); /* smoothstep(n2) */
+      /* Couleurs désaturées — plus poussiéreuses, moins "peinture" */
+      const rAmbre  = lerp(lerp(0.60,0.82,clamp(cw*2,0,1)),0.92,clamp(cw*2-1,0,1));
+      const gAmbre  = lerp(lerp(0.62,0.70,clamp(cw*2,0,1)),0.82,clamp(cw*2-1,0,1));
+      const bAmbre  = lerp(lerp(0.78,0.44,clamp(cw*2,0,1)),0.60,clamp(cw*2-1,0,1));
 
-      /* 4 couleurs distinctes, toutes riches */
-      const rAmbre  = lerp(lerp(0.60,0.88,clamp(cw*2,0,1)),1.00,clamp(cw*2-1,0,1));
-      const gAmbre  = lerp(lerp(0.68,0.74,clamp(cw*2,0,1)),0.88,clamp(cw*2-1,0,1));
-      const bAmbre  = lerp(lerp(0.82,0.42,clamp(cw*2,0,1)),0.58,clamp(cw*2-1,0,1));
+      /* Bleu désaturé — bleu poudré, pas néon */
+      const rBleu   = 0.38; const gBleu   = 0.52; const bBleu   = 0.78;
+      /* Rose désaturé — rose vieux, pas magenta */
+      const rRose   = 0.72; const gRose   = 0.42; const bRose   = 0.62;
+      /* Violet désaturé — violet fumé */
+      const rViolet = 0.50; const gViolet = 0.36; const bViolet = 0.72;
 
-      const rBleu   = 0.28; const gBleu   = 0.52; const bBleu   = 1.00;
-      const rRose   = 1.00; const gRose   = 0.32; const bRose   = 0.72;
-      const rViolet = 0.58; const gViolet = 0.22; const bViolet = 0.95;
+      const rAB = lerp(rAmbre, rBleu,   s1);
+      const gAB = lerp(gAmbre, gBleu,   s1);
+      const bAB = lerp(bAmbre, bBleu,   s1);
+      const rRV = lerp(rRose,  rViolet, s1);
+      const gRV = lerp(gRose,  gViolet, s1);
+      const bRV = lerp(bRose,  bViolet, s1);
+      const rC  = lerp(rAB, rRV, s2);
+      const gC  = lerp(gAB, gRV, s2);
+      const bC  = lerp(bAB, bRV, s2);
 
-      /* Interpolation bilinéaire dans l'espace des 4 couleurs */
-      const rAB  = lerp(rAmbre,  rBleu,   s1);
-      const gAB  = lerp(gAmbre,  gBleu,   s1);
-      const bAB  = lerp(bAmbre,  bBleu,   s1);
-      const rRV  = lerp(rRose,   rViolet, s1);
-      const gRV  = lerp(gRose,   gViolet, s1);
-      const bRV  = lerp(bRose,   bViolet, s1);
-      const rC   = lerp(rAB, rRV, s2);
-      const gC   = lerp(gAB, gRV, s2);
-      const bC   = lerp(bAB, bRV, s2);
+      const colorMask  = clamp(1.0 - Math.abs(byN) / 2.0, 0.0, 1.0);
+      const colorMaskS = colorMask * colorMask * (3.0 - 2.0 * colorMask);
 
-      /* Masque de largeur : les couleurs n'apparaissent que dans la zone centrale
-         où était l'orange/marron. byN est la position normalisée [-1..1] dans
-         la largeur de la bande. On restreint à |byN| < 0.45, fondu doux. */
-      const colorMask = clamp(1.0 - Math.abs(byN) / 2.0, 0.0, 1.0);
-      const colorMaskS = colorMask * colorMask * (3.0 - 2.0 * colorMask); /* smoothstep */
-
-      /* Couleur blanche/crème des bords (palette originale à cw→1) */
       const rEdge = lerp(lerp(0.60,0.88,clamp(cw*2,0,1)),1.00,clamp(cw*2-1,0,1));
       const gEdge = lerp(lerp(0.68,0.74,clamp(cw*2,0,1)),0.88,clamp(cw*2-1,0,1));
       const bEdge = lerp(lerp(0.82,0.42,clamp(cw*2,0,1)),0.58,clamp(cw*2-1,0,1));
@@ -365,10 +363,11 @@ const buildMilkyWayAsync = () => new Promise(resolve => {
       const rF=lerp(lerp(rEdge, rC, colorMaskS), 0.32, dust*0.55);
       const gF=lerp(lerp(gEdge, gC, colorMaskS), 0.22, dust*0.55);
       const bF=lerp(lerp(bEdge, bC, colorMaskS), 0.12, dust*0.55);
-      /* Luminosité réduite : 0.65 (était 0.85) pour mieux se fondre dans le fond */
-      const finalB=Math.pow(clamp(bright,0,1),0.72)*0.65;
-      /* Alpha plus doux : ×3.5 (était ×4.5) */
-      const alpha=clamp(bright*3.5,0,1);
+
+      /* Luminosité : gamma plus fort (0.80) + scale réduit (0.55) */
+      const finalB = Math.pow(clamp(bright,0,1), 0.80) * 0.55;
+      /* Alpha doux : ×2.8 — fondu plus progressif dans le noir */
+      const alpha  = clamp(bright*2.8, 0, 1);
       px[idx]  =Math.min(255,rF*finalB*255);
       px[idx+1]=Math.min(255,gF*finalB*255);
       px[idx+2]=Math.min(255,bF*finalB*255);
