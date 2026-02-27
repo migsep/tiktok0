@@ -94,7 +94,9 @@ const hideToast = () => {
 ───────────────────────────────────────────────────────── */
 let actx, analyser, freqData, live = false;
 let bs=0, sub=0, lastBs=0, beatImpact=0;
-let currentBufSrc = null;
+let currentBufSrc  = null;   // BufferSourceNode (audio files)
+let currentMediaEl = null;   // HTMLMediaElement (video files or large audio)
+let currentObjUrl  = null;   // object URL to revoke on next load
 
 const fBand = (lo, hi) => {
   if(!freqData || !freqData.length) return 0;
@@ -104,11 +106,27 @@ const fBand = (lo, hi) => {
   return s / ((b-a) * 255);
 };
 
+/* Creates / resets the analyser node */
 const setupAnalyser = () => {
+  if(analyser) try{ analyser.disconnect(); }catch(_){}
   analyser = actx.createAnalyser();
   analyser.fftSize = 2048;
   analyser.smoothingTimeConstant = 0.82;
   freqData = new Uint8Array(analyser.frequencyBinCount);
+};
+
+/* Ensures an AudioContext exists and is running */
+const ensureActx = async () => {
+  if(!actx || actx.state === 'closed')
+    actx = new(window.AudioContext || window.webkitAudioContext)();
+  if(actx.state === 'suspended') await actx.resume();
+};
+
+/* Teardown previous playback */
+const stopPrev = () => {
+  if(currentBufSrc)  { try{ currentBufSrc.stop(); }catch(_){} currentBufSrc = null; }
+  if(currentMediaEl) { currentMediaEl.pause(); currentMediaEl.src = ''; currentMediaEl = null; }
+  if(currentObjUrl)  { try{ URL.revokeObjectURL(currentObjUrl); }catch(_){} currentObjUrl = null; }
 };
 
 const goLive = () => {
@@ -117,10 +135,10 @@ const goLive = () => {
   document.getElementById('hint').classList.add('gone');
 };
 
+/* ── Microphone ── */
 document.getElementById('micBtn').onclick = async () => {
   try {
-    actx = new(window.AudioContext || window.webkitAudioContext)();
-    await actx.resume();
+    await ensureActx();
     const stream = await navigator.mediaDevices.getUserMedia({audio:true});
     setupAnalyser();
     actx.createMediaStreamSource(stream).connect(analyser);
@@ -133,55 +151,162 @@ document.getElementById('micBtn').onclick = async () => {
 
 document.getElementById('fileBtn').onclick = () => document.getElementById('fileInput').click();
 
+/* ── File loading — fully separated paths for video vs audio ──
+   iOS CRITICAL RULE: .play() must be called SYNCHRONOUSLY within
+   the user-gesture event stack. Any await before play() on iOS Safari
+   exits the gesture context → play() fails silently, no audio.
+   Strategy:
+     VIDEO  → build element + call play() FIRST (sync), then setup AudioContext
+     AUDIO  → decodeAudioData (works great for MP3/AAC, loops perfectly)
+              fallback → MediaElement (large files or unsupported codecs)
+─────────────────────────────────────────────────────────────────── */
 document.getElementById('fileInput').onchange = async e => {
   const f = e.target.files[0]; if(!f) return;
+
+  stopPrev();
+
+  /* Show track name */
   const trackEl = document.getElementById('track');
   trackEl.textContent = f.name.replace(/\.[^.]+$/, '');
   trackEl.style.display = 'block';
-  if(currentBufSrc) { try{ currentBufSrc.stop(); }catch(_){} currentBufSrc = null; }
-  if(!actx || actx.state === 'closed')
-    actx = new(window.AudioContext || window.webkitAudioContext)();
-  await actx.resume();
-  const MAX_MB = 150;
-  if(f.size / 1024 / 1024 > MAX_MB) {
-    showToast(`Fichier trop volumineux<br>Limite : ${MAX_MB} Mo`, 5000); return;
+
+  const isVideo = f.type.startsWith('video/') ||
+                  /\.(mp4|mov|m4v|webm|mkv|avi)$/i.test(f.name);
+
+  /* Create the object URL once */
+  const objUrl = URL.createObjectURL(f);
+  currentObjUrl = objUrl;
+
+  /* ════════════════════════════════════════
+     PATH A — VIDEO FILE
+     play() called SYNCHRONOUSLY right now,
+     before any await, to stay in iOS gesture.
+  ════════════════════════════════════════ */
+  if(isVideo) {
+    const vid = document.createElement('video');
+    vid.setAttribute('playsinline', '');          /* required by iOS */
+    vid.setAttribute('webkit-playsinline', '');   /* older iOS */
+    vid.playsInline = true;
+    vid.loop   = true;
+    vid.volume = 1.0;
+    vid.src    = objUrl;
+
+    /* ⚡ SYNCHRONOUS play() — still in gesture context */
+    const playPromise = vid.play();
+    currentMediaEl = vid;
+
+    /* Now we can await async things */
+    try { await ensureActx(); } catch(_){}
+
+    /* Wait for playback to actually start */
+    try {
+      await playPromise;
+    } catch(playErr) {
+      showToast('Lecture impossible<br>' + playErr.message, 5000);
+      return;
+    }
+
+    /* Connect to Web Audio for analysis */
+    setupAnalyser();
+    try {
+      actx.createMediaElementSource(vid).connect(analyser);
+      analyser.connect(actx.destination);
+    } catch(audioErr) {
+      /* createMediaElementSource can fail if element was already used
+         by another context — show a warning but still animate */
+      console.warn('Web Audio connect failed:', audioErr);
+      showToast('Visualisation indisponible<br>audio actif en sortie directe', 4000);
+    }
+    goLive();
+    return;
   }
-  const prog = document.getElementById('progress');
+
+  /* ════════════════════════════════════════
+     PATH B — AUDIO FILE (MP3, AAC, M4A…)
+     decodeAudioData: decoded once into RAM,
+     seamless loop, best quality.
+  ════════════════════════════════════════ */
+  await ensureActx();
+
+  /* Large files (> 80 MB decoded PCM would be too heavy) → MediaElement */
+  const sizeMB = f.size / 1024 / 1024;
+  if(sizeMB > 80) {
+    showToast('Gros fichier — lecture directe', 2000);
+    const audio = new Audio();
+    audio.loop  = true;
+    /* play() FIRST before any more awaits */
+    const pp = audio.play.bind(audio);
+    audio.src  = objUrl;
+    const pprom = pp();
+    setupAnalyser();
+    try { await pprom; } catch(_){}
+    try {
+      actx.createMediaElementSource(audio).connect(analyser);
+      analyser.connect(actx.destination);
+      currentMediaEl = audio;
+      goLive();
+    } catch(err) {
+      showToast('Lecture impossible<br>' + err.message, 5000);
+    }
+    return;
+  }
+
+  /* Normal audio file — decode to buffer */
+  const prog    = document.getElementById('progress');
   const progBar = document.getElementById('progress-bar');
   prog.style.display = 'block'; progBar.style.width = '0%';
   showToast('Chargement…', -1);
+
   try {
-    const buf = await new Promise((res, rej) => {
-      const r = new FileReader();
-      r.onprogress = ev => { if(ev.lengthComputable) progBar.style.width = (ev.loaded/ev.total*80)+'%'; };
-      r.onload = ev => { progBar.style.width = '90%'; res(ev.target.result); };
-      r.onerror = () => rej(new Error('Lecture échouée'));
-      r.readAsArrayBuffer(f);
+    /* Read file */
+    const arrayBuf = await new Promise((res, rej) => {
+      const reader = new FileReader();
+      reader.onprogress = ev => {
+        if(ev.lengthComputable)
+          progBar.style.width = (ev.loaded / ev.total * 80) + '%';
+      };
+      reader.onload  = ev => { progBar.style.width = '90%'; res(ev.target.result); };
+      reader.onerror = () => rej(new Error('Lecture échouée'));
+      reader.readAsArrayBuffer(f);
     });
+
     showToast('Décodage…', -1);
-    const audioBuf = await actx.decodeAudioData(buf);
-    progBar.style.width = '100%'; prog.style.display = 'none'; hideToast();
+
+    /* decodeAudioData — wrap callback API for iOS compat
+       (some iOS versions reject the promise form) */
+    const audioBuf = await new Promise((res, rej) =>
+      actx.decodeAudioData(arrayBuf, res, rej)
+    );
+
+    progBar.style.width = '100%';
+    prog.style.display  = 'none';
+    hideToast();
+
     setupAnalyser();
     analyser.connect(actx.destination);
-    currentBufSrc = actx.createBufferSource();
+    currentBufSrc        = actx.createBufferSource();
     currentBufSrc.buffer = audioBuf;
-    currentBufSrc.loop = true;
+    currentBufSrc.loop   = true;
     currentBufSrc.connect(analyser);
     currentBufSrc.start(0);
     goLive();
+
   } catch(err) {
     prog.style.display = 'none'; hideToast();
-    console.warn('decodeAudioData failed, trying MediaElement:', err);
+    console.warn('decodeAudioData failed, MediaElement fallback:', err);
+    showToast('Basculement mode direct…', 1500);
+
+    /* Fallback: MediaElement (still valid here for audio, gesture still warm) */
     try {
-      const isVideo = f.type.startsWith('video/') || /\.(mp4|mov|m4v|webm|mkv)$/i.test(f.name);
-      const media = isVideo ? document.createElement('video') : new Audio();
-      if(isVideo){ media.playsInline = true; media.muted = false; }
-      media.src = URL.createObjectURL(f);
-      media.loop = true;
-      await media.play();
+      const audio = new Audio();
+      audio.loop = true;
+      audio.src  = objUrl;
+      const pp   = audio.play();
       setupAnalyser();
-      actx.createMediaElementSource(media).connect(analyser);
+      try { await pp; } catch(_){}
+      actx.createMediaElementSource(audio).connect(analyser);
       analyser.connect(actx.destination);
+      currentMediaEl = audio;
       goLive();
     } catch(err2) {
       showToast('Lecture impossible<br>' + err2.message, 6000);
